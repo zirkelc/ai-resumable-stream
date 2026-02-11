@@ -36,14 +36,10 @@ sequenceDiagram
         Note over Client,Redis: Start Stream
         Client->>Server: sendMessage()
         Server->>Server: streamText()
-        par Subscribe to channels
-            Server->>Redis: Subscribe to stop channel
-            Server->>Redis: Subscribe to stream channel
-        end
-        loop Stream chunks
-            Server->>Redis: Store chunk
-            Server-->>Client: Send chunk
-        end
+        Server->>Redis: Subscribe to stop channel
+        Server->>Redis: Subscribe to stream channel
+        Server->>Redis: Store chunk
+        Server-->>Client: Send chunk
     end
 
     rect rgb(240, 255, 240)
@@ -52,10 +48,8 @@ sequenceDiagram
         Server->>Redis: Subscribe to stream channel
         Redis-->>Server: Replay stored chunks
         Server-->>Client: Stream past chunks
-        loop New chunks (if stream active)
-            Redis-->>Server: Receive new chunk
-            Server-->>Client: Stream chunk
-        end
+        Redis-->>Server: Receive new chunk
+        Server-->>Client: Stream chunk
     end
 
     rect rgb(255, 248, 240)
