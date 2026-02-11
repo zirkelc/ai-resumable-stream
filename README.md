@@ -38,8 +38,8 @@ sequenceDiagram
         Server->>Server: streamText()
         Server->>Redis: Subscribe to stop channel
         Server->>Redis: Subscribe to stream channel
-        Server->>Redis: Store chunk
-        Server-->>Client: Send chunk
+        Server->>Redis: Store chunks
+        Server-->>Client: Stream chunks
     end
 
     rect rgb(240, 255, 240)
@@ -48,8 +48,8 @@ sequenceDiagram
         Server->>Redis: Subscribe to stream channel
         Redis-->>Server: Replay stored chunks
         Server-->>Client: Stream past chunks
-        Redis-->>Server: Receive new chunk
-        Server-->>Client: Stream chunk
+        Redis-->>Server: Receive new chunks
+        Server-->>Client: Stream new chunks
     end
 
     rect rgb(255, 248, 240)
@@ -58,13 +58,12 @@ sequenceDiagram
         Server->>Redis: Publish to stop channel
         Redis-->>Server: Notify subscriber
         Server->>Server: AbortController.abort()
-        Server->>Redis: Unsubscribe from channels
     end
 ```
 
 ## Installation
 
-This library requires a Redis client.
+This library requires a [Redis](https://github.com/redis/node-redis) client.
 
 ```bash
 npm install ai-resumable-stream redis
@@ -96,7 +95,7 @@ const context = await createResumableUIMessageStream({
 
 Start a new stream and persist chunks to Redis. Returns a client stream that can be consumed immediately.
 
-> ![TIP]
+> [!TIP]
 > The stream returned by `startStream` is both a readable stream and an async iterable.
 > That means you can use `return stream` or `yield* stream`.
 
@@ -134,7 +133,7 @@ async function sendMessage() {
 
 Resume an existing stream from Redis. Returns all past chunks followed by any remaining chunks, or `null` if no active stream exists.
 
-> ![TIP]
+> [!TIP]
 > The stream returned by `resumeStream` is both a readable stream and an async iterable.
 > That means you can use `return stream` or `yield* stream`.
 
