@@ -36,24 +36,35 @@ sequenceDiagram
         Note over Client,Redis: Start Stream
         Client->>Server: sendMessage()
         Server->>Server: streamText()
-        Server->>Redis: Store chunks
-        Server-->>Client: Stream chunks
+        par Subscribe to channels
+            Server->>Redis: Subscribe to stop channel
+            Server->>Redis: Subscribe to stream channel
+        end
+        loop Stream chunks
+            Server->>Redis: Store chunk
+            Server-->>Client: Send chunk
+        end
     end
 
     rect rgb(240, 255, 240)
         Note over Client,Redis: Resume Stream
         Client->>Server: resumeMessage()
-        Server->>Redis: Get stored chunks
-        Redis-->>Server: Replay + subscribe
-        Server-->>Client: All chunks (past + future)
+        Server->>Redis: Subscribe to stream channel
+        Redis-->>Server: Replay stored chunks
+        Server-->>Client: Stream past chunks
+        loop New chunks (if stream active)
+            Redis-->>Server: Receive new chunk
+            Server-->>Client: Stream chunk
+        end
     end
 
     rect rgb(255, 248, 240)
         Note over Client,Redis: Stop Stream
         Client->>Server: stopStream()
-        Server->>Redis: Publish stop
-        Redis-->>Server: Notify via pub/sub
+        Server->>Redis: Publish to stop channel
+        Redis-->>Server: Notify subscriber
         Server->>Server: AbortController.abort()
+        Server->>Redis: Unsubscribe from channels
     end
 ```
 
@@ -212,6 +223,10 @@ export const appRouter = router({
         model: openai("gpt-4o"),
         messages: [message],
         abortSignal: abortController.signal,
+        onFinish: async () => {
+          // TODO: Clear the active stream when finished
+          await saveChat({ chatId, activeStreamId: null });
+        },
       });
 
       const stream = await context.startStream(result.toUIMessageStream());
