@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       ai-stream-utils:
-        specifier: ^1.5.0
-        version: 1.5.0(ai@6.0.79(zod@3.25.76))
+        specifier: ^1.6.0
+        version: 1.6.0(ai@6.0.79(zod@3.25.76))
       resumable-stream:
         specifier: ^2.2.10
         version: 2.2.10
@@ -974,8 +974,8 @@ packages:
     resolution: {integrity: sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ==}
     engines: {node: '>= 14'}
 
-  ai-stream-utils@1.5.0:
-    resolution: {integrity: sha512-4rW845hM0ZobVNi4wCtl9m4XRUxpnqVRZczq1lq2HhTO/BIkrc8t9W8BIhT0veDnXlm+G1Ki8R+4kAJT6GztpA==}
+  ai-stream-utils@1.6.0:
+    resolution: {integrity: sha512-nhOToR+J3scudZWZUnGO84JXeQHJhwTyUCNQxGQpRzYc7uQQHSiLbJsv2uYiXBEUpAz1HarBoPbBX4E7ntahrg==}
     peerDependencies:
       ai: 5.x || 6.x
 
@@ -2665,7 +2665,7 @@ snapshots:
 
   agent-base@7.1.4: {}
 
-  ai-stream-utils@1.5.0(ai@6.0.79(zod@3.25.76)):
+  ai-stream-utils@1.6.0(ai@6.0.79(zod@3.25.76)):
     dependencies:
       ai: 6.0.79(zod@3.25.76)
 

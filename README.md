@@ -63,7 +63,7 @@ sequenceDiagram
 
 ## Installation
 
-This library requires a [Redis](https://github.com/redis/node-redis) client.
+This library requires [Redis](https://github.com/redis/node-redis).
 
 ```bash
 npm install ai-resumable-stream redis
@@ -71,7 +71,7 @@ npm install ai-resumable-stream redis
 
 ## Usage
 
-The library requires two Redis clients (pub/sub needs separate connections). The clients will connect automatically, if not already connected, but the library won't disconnect them afterwards. That means you can manage the connection lifecycle in your application and reuse clients across multiple streams.
+The library requires two Redis clients (pub/sub needs separate connections). The clients will be connected automatically, if not already connected, but the library won't disconnect them afterwards. That means you can manage the connection lifecycle in your application and reuse clients across multiple streams.
 
 ```typescript
 import { createClient } from "redis";

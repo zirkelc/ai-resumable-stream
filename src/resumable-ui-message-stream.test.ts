@@ -1,7 +1,8 @@
 import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
 import type { UIMessageChunk } from "ai";
-import { readUIMessageStream, simulateReadableStream, streamText } from "ai";
+import { simulateReadableStream, streamText } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
+import { consumeUIMessageStream } from "ai-stream-utils";
 import { convertAsyncIterableToArray } from "ai-stream-utils/utils";
 import { createClient } from "redis";
 import { RedisMemoryServer } from "redis-memory-server";
@@ -683,19 +684,13 @@ describe(`createResumableUIMessageStream`, () => {
 
 			// Consume resumed stream via readUIMessageStream and get final UIMessage
 			const originalStream = await startPromise;
-			const originalMessages = await convertAsyncIterableToArray(
-				readUIMessageStream({ stream: originalStream }),
-			);
-			const resumedMessages = await convertAsyncIterableToArray(
-				readUIMessageStream({ stream: resumedStream }),
-			);
-			const resumedFinalMessage = resumedMessages.at(-1);
-			const originalFinalMessage = originalMessages.at(-1);
+			const originalMessage = await consumeUIMessageStream(originalStream);
+			const resumedMessage = await consumeUIMessageStream(resumedStream);
 
 			// Assert
-			expect(resumedFinalMessage).toBeDefined();
-			expect(originalFinalMessage).toBeDefined();
-			expect(resumedFinalMessage).toEqual(originalFinalMessage);
+			expect(resumedMessage).toBeDefined();
+			expect(originalMessage).toBeDefined();
+			expect(resumedMessage).toEqual(originalMessage);
 		});
 	});
 });
