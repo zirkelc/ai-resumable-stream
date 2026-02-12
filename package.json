@@ -1,71 +1,71 @@
 {
-	"name": "ai-resumable-stream",
-	"version": "1.0.0",
-	"description": "AI SDK: resume and stop UI message streams",
-	"keywords": [
-		"ai",
-		"ai-sdk",
-		"redis",
-		"resumable",
-		"resumable-stream",
-		"stream"
-	],
-	"license": "MIT",
-	"author": "Chris Cook",
-	"repository": {
-		"type": "git",
-		"url": "git+https://github.com/zirkelc/ai-resumable-stream.git"
-	},
-	"files": [
-		"dist"
-	],
-	"type": "module",
-	"exports": {
-		".": "./dist/index.mjs",
-		"./package.json": "./package.json"
-	},
-	"scripts": {
-		"prepublishOnly": "pnpm build",
-		"build": "tsdown",
-		"test": "vitest",
-		"lint": "oxlint --fix",
-		"lint:ci": "oxlint",
-		"format": "oxfmt --write",
-		"format:ci": "oxfmt --check",
-		"prepare": "husky"
-	},
-	"dependencies": {
-		"ai-stream-utils": "^1.6.0",
-		"resumable-stream": "^2.2.10"
-	},
-	"devDependencies": {
-		"@ai-sdk/provider": "^3.0.8",
-		"@arethetypeswrong/cli": "^0.18.2",
-		"@total-typescript/tsconfig": "^1.0.4",
-		"@types/node": "^25.2.3",
-		"@vitest/coverage-v8": "^4.0.18",
-		"ai": "^6.0.79",
-		"husky": "^9.1.7",
-		"lint-staged": "^16.2.7",
-		"oxfmt": "^0.31.0",
-		"oxlint": "^1.46.0",
-		"pkg-pr-new": "^0.0.63",
-		"publint": "^0.3.17",
-		"redis": "^5.10.0",
-		"redis-memory-server": "^0.16.0",
-		"tsdown": "^0.20.3",
-		"tsx": "^4.21.0",
-		"typescript": "^5.9.3",
-		"vitest": "^4.0.18"
-	},
-	"lint-staged": {
-		"*.{js,ts,tsx,jsx}": [
-			"pnpm lint",
-			"pnpm format"
-		],
-		"*.{json,jsonc}": [
-			"pnpm format"
-		]
-	},
-	"packageManager": "pnpm@10.0.0"
+  "name": "ai-resumable-stream",
+  "version": "1.0.0",
+  "description": "AI SDK: resume and stop UI message streams",
+  "keywords": [
+    "ai",
+    "ai-sdk",
+    "redis",
+    "resumable",
+    "resumable-stream",
+    "stream"
+  ],
+  "license": "MIT",
+  "author": "Chris Cook",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zirkelc/ai-resumable-stream.git"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./dist/index.mjs",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "prepublishOnly": "pnpm build",
+    "build": "tsdown",
+    "test": "vitest",
+    "lint": "oxlint --fix",
+    "lint:ci": "oxlint",
+    "format": "oxfmt --write",
+    "format:ci": "oxfmt --check",
+    "prepare": "husky"
+  },
+  "dependencies": {
+    "ai-stream-utils": "^1.6.0",
+    "resumable-stream": "^2.2.10"
+  },
+  "devDependencies": {
+    "@ai-sdk/provider": "^3.0.8",
+    "@arethetypeswrong/cli": "^0.18.2",
+    "@total-typescript/tsconfig": "^1.0.4",
+    "@types/node": "^25.2.3",
+    "@vitest/coverage-v8": "^4.0.18",
+    "ai": "^6.0.79",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.2.7",
+    "oxfmt": "^0.31.0",
+    "oxlint": "^1.46.0",
+    "pkg-pr-new": "^0.0.63",
+    "publint": "^0.3.17",
+    "redis": "^5.10.0",
+    "redis-memory-server": "^0.16.0",
+    "tsdown": "^0.20.3",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  },
+  "lint-staged": {
+    "*.{js,ts,tsx,jsx}": [
+      "pnpm lint",
+      "pnpm format"
+    ],
+    "*.{json,jsonc}": [
+      "pnpm format"
+    ]
+  },
+  "packageManager": "pnpm@10.0.0"
 }
