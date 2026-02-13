@@ -5,15 +5,16 @@ export default defineConfig({
    * Run arethetypeswrong after bundling.
    * Requires @arethetypeswrong/core to be installed.
    */
-  // attw: {
-  // 	profile: "esm-only",
-  // },
+  attw: {
+    profile: "esm-only",
+  },
   /**
    * Run publint after bundling.
    * Requires publint to be installed.
    */
   publint: true,
   exports: true,
+  dts: true,
   entry: "src/**/index.ts",
   format: ["esm"],
 });
