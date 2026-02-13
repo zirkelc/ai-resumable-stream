@@ -9,7 +9,7 @@
 
 </div>
 
-This library provides resumable streaming for UI message streams created by [`streamText()`](https://ai-sdk.dev/docs/reference/ai-sdk-core/stream-text) in the AI SDK. It uses Redis to persist stream data, allowing clients to resume interrupted streams or stop active streams from anywhere.
+This library provides resumable streaming for UI message streams created by [`streamText()`](https://ai-sdk.dev/docs/reference/ai-sdk-core/stream-text) in the AI SDK. It uses Redis to store streaming chunks, allowing clients to resume interrupted streams or stop active streams from anywhere.
 
 **Why?**
 
