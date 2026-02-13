@@ -13,7 +13,7 @@ export default defineConfig({
    * Requires publint to be installed.
    */
   publint: true,
-  exports: true,
+  dts: true,
   entry: "src/**/index.ts",
   format: ["esm"],
 });
