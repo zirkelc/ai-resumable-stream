@@ -1,12 +1,9 @@
 import type { UIMessageChunk } from "ai";
-import {
-  type AsyncIterableStream,
-  convertSSEToUIMessageStream,
-  convertUIMessageToSSEStream,
-  createAsyncIterableStream,
-} from "ai-stream-utils/utils";
+import { type AsyncIterableStream, createAsyncIterableStream } from "ai-stream-utils";
 import type { createClient } from "redis";
 import { createResumableStreamContext } from "resumable-stream";
+import { convertSSEToUIMessageStream } from "./convert-sse-stream-to-ui-message-stream.js";
+import { convertUIMessageToSSEStream } from "./convert-ui-message-stream-to-sse-stream.js";
 
 const KEY_PREFIX = `ai-resumable-stream`;
 
@@ -101,6 +98,9 @@ export async function createResumableUIMessageStream(options: CreateResumableUIM
      */
     const [clientStream, resumableStream] = stream.tee();
 
+    /**
+     * Convert stream of UI message chunks to SSE-formatted stream for storage in Redis.
+     */
     const sseStream = convertUIMessageToSSEStream(resumableStream);
 
     /**
@@ -135,7 +135,11 @@ export async function createResumableUIMessageStream(options: CreateResumableUIM
     const resumableStream = await context.resumeExistingStream(streamId);
     if (!resumableStream) return null;
 
+    /**
+     * Convert the SSE-formatted stream from Redis back into a stream of UI message chunks for the client.
+     */
     const uiStream = convertSSEToUIMessageStream(resumableStream);
+
     return createAsyncIterableStream(uiStream);
   }
 

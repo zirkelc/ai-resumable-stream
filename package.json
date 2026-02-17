@@ -36,7 +36,7 @@
     "prepare": "husky"
   },
   "dependencies": {
-    "ai-stream-utils": "^1.6.0",
+    "ai-stream-utils": "^2.0.0",
     "resumable-stream": "^2.2.10"
   },
   "devDependencies": {
