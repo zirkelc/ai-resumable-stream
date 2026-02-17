@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/zirkelc/ai-resumable-stream/compare/v1.1.1...v1.2.0) (2026-02-17)
+
+
+### Features
+
+* inline SSE conversion utils from ai-stream-utils ([218246a](https://github.com/zirkelc/ai-resumable-stream/commit/218246a565076d8c43f473f3916cd8774d9bbf63))
+
 ## [1.1.1](https://github.com/zirkelc/ai-resumable-stream/compare/v1.1.0...v1.1.1) (2026-02-13)
 
 
