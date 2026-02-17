@@ -38,7 +38,7 @@ sequenceDiagram
         Server->>Server: streamText()
         Server->>Redis: Subscribe to stop channel
         Server->>Redis: Subscribe to stream channel
-        Server->>Redis: Store chunks
+        Server->>Redis: Store chunks (UI-to-SSE conversion)
         Server-->>Client: Stream chunks
     end
 
@@ -47,9 +47,9 @@ sequenceDiagram
         Client->>Server: resumeMessage()
         Server->>Redis: Subscribe to stream channel
         Redis-->>Server: Replay stored chunks
-        Server-->>Client: Stream past chunks
+        Server-->>Client: Stream past chunks (SSE-to-UI conversion)
         Redis-->>Server: Receive new chunks
-        Server-->>Client: Stream new chunks
+        Server-->>Client: Stream new chunks (SSE-to-UI conversion)
     end
 
     rect rgb(255, 248, 240)
