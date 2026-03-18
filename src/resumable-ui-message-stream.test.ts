@@ -13,9 +13,14 @@ type Redis = ReturnType<typeof createClient>;
 
 let redisServer: RedisMemoryServer;
 let redisUrl: string;
-let publisher: Redis;
-let subscriber: Redis;
+let redisClients: Array<Redis> = [];
 let pendingPromises: Array<Promise<unknown>>;
+
+function createRedisClient(): Redis {
+  const client = createClient({ url: redisUrl });
+  redisClients.push(client);
+  return client;
+}
 
 function waitUntil(promise: Promise<unknown>): void {
   pendingPromises.push(promise);
@@ -86,29 +91,36 @@ afterAll(async () => {
   await redisServer.stop();
 }, 30_000);
 
-beforeEach(async () => {
-  publisher = createClient({ url: redisUrl });
-  subscriber = createClient({ url: redisUrl });
+beforeEach(() => {
+  redisClients = [];
   pendingPromises = [];
-  await Promise.all([publisher.connect(), subscriber.connect()]);
-  await publisher.flushDb();
 });
 
 afterEach(async () => {
-  await Promise.allSettled(pendingPromises);
+  /**
+   * Wait for pending promises with timeout to handle cases where
+   * Redis disconnects mid-stream or streams error
+   */
+  await Promise.race([Promise.allSettled(pendingPromises), sleep(200)]);
   await sleep(25);
-  await Promise.all([
-    publisher.isOpen ? publisher.quit() : Promise.resolve(),
-    subscriber.isOpen ? subscriber.quit() : Promise.resolve(),
-  ]);
+
+  await Promise.all(
+    redisClients.map((client) => (client.isOpen ? client.quit() : Promise.resolve())),
+  );
+
+  /** Flush DB with a temp client to ensure clean state for next test */
+  const tempClient = createClient({ url: redisUrl });
+  await tempClient.connect();
+  await tempClient.flushDb();
+  await tempClient.quit();
 });
 
 describe(`createResumableUIMessageStream`, () => {
   describe(`Redis connection`, () => {
     test(`should connect clients if disconnected`, async () => {
       // Arrange - create fresh disconnected clients
-      const publisher = createClient({ url: redisUrl });
-      const subscriber = createClient({ url: redisUrl });
+      const publisher = createRedisClient();
+      const subscriber = createRedisClient();
 
       // Verify not connected
       expect(publisher.isOpen).toBe(false);
@@ -125,18 +137,14 @@ describe(`createResumableUIMessageStream`, () => {
       // Assert - now connected
       expect(publisher.isOpen).toBe(true);
       expect(subscriber.isOpen).toBe(true);
-
-      // Cleanup
-      await publisher.quit();
-      await subscriber.quit();
     });
 
     test(`should not disconnect clients after stream completes`, async () => {
       // Arrange
-      // Arrange - create fresh disconnected clients
-      const publisher = createClient({ url: redisUrl });
-      const subscriber = createClient({ url: redisUrl });
-      await Promise.all([publisher.connect(), subscriber.connect()]);
+      const [publisher, subscriber] = await Promise.all([
+        createRedisClient().connect(),
+        createRedisClient().connect(),
+      ]);
 
       // Verify connected
       expect(publisher.isOpen).toBe(true);
@@ -163,14 +171,14 @@ describe(`createResumableUIMessageStream`, () => {
       // Assert - clients still connected
       expect(publisher.isOpen).toBe(true);
       expect(subscriber.isOpen).toBe(true);
-
-      // Cleanup
-      await publisher.quit();
-      await subscriber.quit();
     });
 
     test(`should not reconnect already-connected clients`, async () => {
-      // Arrange - clients already connected from beforeEach
+      // Arrange
+      const publisher = createRedisClient();
+      const subscriber = createRedisClient();
+      await Promise.all([publisher.connect(), subscriber.connect()]);
+
       expect(publisher.isOpen).toBe(true);
       expect(subscriber.isOpen).toBe(true);
 
@@ -193,6 +201,11 @@ describe(`createResumableUIMessageStream`, () => {
 
     test(`should unsubscribe from stop channel after stream completes`, async () => {
       // Arrange
+      const [publisher, subscriber] = await Promise.all([
+        createRedisClient().connect(),
+        createRedisClient().connect(),
+      ]);
+
       const streamId = `test-stream`;
       const abortController = new AbortController();
       const chunks: Array<UIMessageChunk> = [
@@ -220,9 +233,167 @@ describe(`createResumableUIMessageStream`, () => {
     });
   });
 
+  describe(`Errors`, () => {
+    /**
+     * Suppress expected unhandled errors in fault tolerance tests.
+     * resumable-stream doesn't handle errors from tee'd branches or Redis disconnects.
+     */
+    const rejectionHandler = (reason: Error) => {
+      const expectedErrors = [`Stream error`, `The client is closed`];
+      if (expectedErrors.includes(reason?.message)) {
+        return; // Suppress
+      }
+      throw reason;
+    };
+    const uncaughtHandler = (error: Error) => {
+      if (error?.message?.includes(`Socket closed unexpectedly`)) {
+        return; // Suppress
+      }
+      throw error;
+    };
+
+    beforeEach(() => {
+      process.on(`unhandledRejection`, rejectionHandler);
+      process.on(`uncaughtException`, uncaughtHandler);
+    });
+
+    afterEach(async () => {
+      // Wait for async rejections to fire before removing handlers
+      await sleep(100);
+      process.off(`unhandledRejection`, rejectionHandler);
+      process.off(`uncaughtException`, uncaughtHandler);
+    });
+
+    test(`should fail when Redis connection fails at init`, async () => {
+      // Arrange
+      const badPublisher = createClient({ url: `redis://invalid:9999` });
+      const badSubscriber = createClient({ url: `redis://invalid:9999` });
+
+      // Act & Assert
+      const promise = createResumableUIMessageStream({
+        streamId: `test-stream`,
+        publisher: badPublisher,
+        subscriber: badSubscriber,
+        waitUntil,
+      });
+
+      await expect(promise).rejects.toThrow();
+    });
+
+    test(`should fail when source stream is locked`, async () => {
+      // Arrange
+      const [publisher, subscriber] = await Promise.all([
+        createRedisClient().connect(),
+        createRedisClient().connect(),
+      ]);
+
+      const streamId = `test-stream`;
+      const chunks: Array<UIMessageChunk> = [
+        { type: `start` },
+        { type: `finish`, finishReason: `stop` },
+      ];
+      const stream = createStream(chunks);
+      stream.getReader(); // Lock without releasing
+
+      const context = await createResumableUIMessageStream({
+        streamId,
+        publisher,
+        subscriber,
+        waitUntil,
+      });
+
+      // Act
+      const resultStream = context.startStream(stream);
+
+      // Assert - should error due to locked stream
+      await expect(resultStream).rejects.toThrow();
+    });
+
+    test(`should fail when reading from erroring source stream`, async () => {
+      // Arrange
+      const [publisher, subscriber] = await Promise.all([
+        createRedisClient().connect(),
+        createRedisClient().connect(),
+      ]);
+
+      const streamId = `test-stream`;
+      const errorStream = new ReadableStream({
+        pull(controller) {
+          controller.error(new Error(`Stream error`));
+        },
+      });
+
+      const context = await createResumableUIMessageStream({
+        streamId,
+        publisher,
+        subscriber,
+        waitUntil,
+      });
+
+      // Act
+      const resultStream = await context.startStream(errorStream);
+      const reader = resultStream.getReader();
+
+      // Assert - error propagates when reading
+      await expect(reader.read()).rejects.toThrow();
+    });
+
+    test(`should continue client stream when Redis fails mid-stream`, async () => {
+      // Arrange
+      const [publisher, subscriber] = await Promise.all([
+        createRedisClient().connect(),
+        createRedisClient().connect(),
+      ]);
+
+      const streamId = `test-stream`;
+      const chunks: Array<UIMessageChunk> = [
+        { type: `start` },
+        { type: `text-delta`, id: `1`, delta: `Hello` },
+        { type: `text-delta`, id: `1`, delta: `World` },
+        { type: `finish`, finishReason: `stop` },
+      ];
+      const delayedStream = createStream(chunks, 50);
+
+      const context = await createResumableUIMessageStream({
+        streamId,
+        publisher,
+        subscriber,
+        waitUntil,
+      });
+
+      // Act
+      const resultStream = await context.startStream(delayedStream);
+      const reader = resultStream.getReader();
+
+      // Read first chunk
+      const first = await reader.read();
+      expect(first.value?.type).toBe(`start`);
+
+      // Kill Redis connection mid-stream
+      await publisher.quit();
+
+      // Continue reading - should still work
+      const remaining: Array<UIMessageChunk> = [];
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        remaining.push(value!);
+      }
+
+      // Assert - client received all chunks despite Redis failure
+      expect(remaining.length).toBe(3);
+      expect(remaining[2]?.type).toBe(`finish`);
+    });
+  });
+
   describe(`waitUntil`, () => {
     test(`should call waitUntil with background promise`, async () => {
       // Arrange
+      const [publisher, subscriber] = await Promise.all([
+        createRedisClient().connect(),
+        createRedisClient().connect(),
+      ]);
+
       const streamId = `test-stream`;
       const chunks: Array<UIMessageChunk> = [
         { type: `start` },
@@ -251,6 +422,11 @@ describe(`createResumableUIMessageStream`, () => {
   describe(`startStream`, () => {
     test(`should start stream and consume all chunks`, async () => {
       // Arrange
+      const [publisher, subscriber] = await Promise.all([
+        createRedisClient().connect(),
+        createRedisClient().connect(),
+      ]);
+
       const streamId = `test-stream`;
       const chunks: Array<UIMessageChunk> = [
         { type: `start` },
@@ -282,6 +458,11 @@ describe(`createResumableUIMessageStream`, () => {
 
     test(`should handle empty stream`, async () => {
       // Arrange
+      const [publisher, subscriber] = await Promise.all([
+        createRedisClient().connect(),
+        createRedisClient().connect(),
+      ]);
+
       const streamId = `test-stream`;
       const chunks: Array<UIMessageChunk> = [];
       const stream = createStream(chunks);
@@ -302,6 +483,11 @@ describe(`createResumableUIMessageStream`, () => {
 
     test(`should handle control-only chunks (start/finish)`, async () => {
       // Arrange
+      const [publisher, subscriber] = await Promise.all([
+        createRedisClient().connect(),
+        createRedisClient().connect(),
+      ]);
+
       const streamId = `test-stream`;
       const chunks: Array<UIMessageChunk> = [
         { type: `start` },
@@ -329,6 +515,11 @@ describe(`createResumableUIMessageStream`, () => {
   describe(`resumeStream`, () => {
     test(`should return null when no active stream`, async () => {
       // Arrange
+      const [publisher, subscriber] = await Promise.all([
+        createRedisClient().connect(),
+        createRedisClient().connect(),
+      ]);
+
       const streamId = `test-stream`;
       const context = await createResumableUIMessageStream({
         streamId,
@@ -346,6 +537,11 @@ describe(`createResumableUIMessageStream`, () => {
 
     test(`should return null for non-existent streamId`, async () => {
       // Arrange
+      const [publisher, subscriber] = await Promise.all([
+        createRedisClient().connect(),
+        createRedisClient().connect(),
+      ]);
+
       const streamId = `non-existent-stream`;
       const context = await createResumableUIMessageStream({
         streamId,
@@ -363,6 +559,11 @@ describe(`createResumableUIMessageStream`, () => {
 
     test(`should return null when stream is already completed`, async () => {
       // Arrange
+      const [publisher, subscriber] = await Promise.all([
+        createRedisClient().connect(),
+        createRedisClient().connect(),
+      ]);
+
       const streamId = `test-stream`;
       const chunks: Array<UIMessageChunk> = [
         { type: `start` },
@@ -401,6 +602,11 @@ describe(`createResumableUIMessageStream`, () => {
   describe(`stopStream`, () => {
     test(`should stop active stream and fire abort signal`, async () => {
       // Arrange
+      const [publisher, subscriber] = await Promise.all([
+        createRedisClient().connect(),
+        createRedisClient().connect(),
+      ]);
+
       const streamId = `test-stream`;
       const chunks: Array<UIMessageChunk> = [
         { type: `start` },
@@ -448,6 +654,11 @@ describe(`createResumableUIMessageStream`, () => {
 
     test(`should work without abortController (no-op)`, async () => {
       // Arrange
+      const [publisher, subscriber] = await Promise.all([
+        createRedisClient().connect(),
+        createRedisClient().connect(),
+      ]);
+
       const streamId = `test-stream`;
       const context = await createResumableUIMessageStream({
         streamId,
@@ -476,9 +687,6 @@ describe(`createResumableUIMessageStream`, () => {
   });
 
   describe(`streamText`, () => {
-    let secondPublisher: Redis;
-    let secondSubscriber: Redis;
-
     const modelChunks: Array<LanguageModelV3StreamPart> = [
       { type: `text-start`, id: `1` },
       { type: `text-delta`, id: `1`, delta: `Hello` },
@@ -500,21 +708,15 @@ describe(`createResumableUIMessageStream`, () => {
       },
     ];
 
-    beforeEach(async () => {
-      secondPublisher = createClient({ url: redisUrl });
-      secondSubscriber = createClient({ url: redisUrl });
-      await Promise.all([secondPublisher.connect(), secondSubscriber.connect()]);
-    });
-
-    afterEach(async () => {
-      await Promise.all([
-        secondPublisher.isOpen ? secondPublisher.quit() : Promise.resolve(),
-        secondSubscriber.isOpen ? secondSubscriber.quit() : Promise.resolve(),
-      ]);
-    });
-
     test(`should resume an active stream from another client`, async () => {
       // Arrange
+      const [publisher, subscriber, secondPublisher, secondSubscriber] = await Promise.all([
+        createRedisClient().connect(),
+        createRedisClient().connect(),
+        createRedisClient().connect(),
+        createRedisClient().connect(),
+      ]);
+
       const streamId = `test-stream`;
       const abortController = new AbortController();
 
@@ -562,6 +764,14 @@ describe(`createResumableUIMessageStream`, () => {
 
     test(`should stop an active stream from another client`, async () => {
       // Arrange
+      const [firstPublisher, firstSubscriber, secondPublisher, secondSubscriber] =
+        await Promise.all([
+          createRedisClient().connect(),
+          createRedisClient().connect(),
+          createRedisClient().connect(),
+          createRedisClient().connect(),
+        ]);
+
       const streamId = `test-stream`;
       const abortController = new AbortController();
       let isAborted = false;
@@ -570,8 +780,8 @@ describe(`createResumableUIMessageStream`, () => {
       const startPromise = (async () => {
         const context = await createResumableUIMessageStream({
           streamId,
-          publisher,
-          subscriber,
+          publisher: firstPublisher,
+          subscriber: firstSubscriber,
           abortController,
           waitUntil,
         });
@@ -627,6 +837,14 @@ describe(`createResumableUIMessageStream`, () => {
 
     test(`should produce same final UIMessage from startStream and resumeStream via readUIMessageStream`, async () => {
       // Arrange
+      const [firstPublisher, firstSubscriber, secondPublisher, secondSubscriber] =
+        await Promise.all([
+          createRedisClient().connect(),
+          createRedisClient().connect(),
+          createRedisClient().connect(),
+          createRedisClient().connect(),
+        ]);
+
       const streamId = `test-stream`;
       const abortController = new AbortController();
 
@@ -634,8 +852,8 @@ describe(`createResumableUIMessageStream`, () => {
       const startPromise = (async () => {
         const context = await createResumableUIMessageStream({
           streamId,
-          publisher,
-          subscriber,
+          publisher: firstPublisher,
+          subscriber: firstSubscriber,
           abortController,
           waitUntil,
         });

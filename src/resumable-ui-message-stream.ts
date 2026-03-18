@@ -2,6 +2,7 @@ import type { UIMessageChunk } from "ai";
 import { type AsyncIterableStream, createAsyncIterableStream } from "ai-stream-utils";
 import type { createClient } from "redis";
 import { createResumableStreamContext } from "resumable-stream";
+import { createEagerStream } from "./create-eager-stream.js";
 import { convertSSEToUIMessageStream } from "./convert-sse-stream-to-ui-message-stream.js";
 import { convertUIMessageToSSEStream } from "./convert-ui-message-stream-to-sse-stream.js";
 
@@ -109,20 +110,13 @@ export async function createResumableUIMessageStream(options: CreateResumableUIM
     await context.createNewResumableStream(streamId, () => sseStream);
 
     /**
-     * Wrap client stream to auto-unsubscribe on completion
+     * Eagerly drain the client stream.
+     * This prevents backpressure from tee() when the user doesn't consume the stream.
+     * Auto-unsubscribe on completion or cancel.
      */
-    const wrappedStream = clientStream.pipeThrough(
-      new TransformStream<UIMessageChunk, UIMessageChunk>({
-        transform(chunk, controller) {
-          controller.enqueue(chunk);
-        },
-        flush() {
-          unsubscribe();
-        },
-      }),
-    );
+    const eagerStream = createEagerStream(clientStream, () => unsubscribe());
 
-    return createAsyncIterableStream(wrappedStream);
+    return createAsyncIterableStream(eagerStream);
   }
 
   /**
