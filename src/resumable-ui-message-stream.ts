@@ -149,28 +149,28 @@ export async function createResumableUIMessageStream(options: CreateResumableUIM
         while (true) {
           const { done, value } = await reader.read();
           if (done) {
-            redisController.close();
+            redisController!.close();
             if (!clientCancelled) {
-              clientController.close();
+              clientController!.close();
             }
             break;
           }
           /**
            * Always enqueue to Redis for persistence
            */
-          redisController.enqueue(value);
+          redisController!.enqueue(value);
 
           /**
            * Only enqueue to client if still connected to avoid unbounded memory growth
            */
           if (!clientCancelled) {
-            clientController.enqueue(value);
+            clientController!.enqueue(value);
           }
         }
       } catch (error) {
-        redisController.error(error);
+        redisController!.error(error);
         if (!clientCancelled) {
-          clientController.error(error);
+          clientController!.error(error);
         }
       } finally {
         reader.releaseLock();
