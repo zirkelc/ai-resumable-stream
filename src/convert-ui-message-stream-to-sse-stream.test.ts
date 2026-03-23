@@ -40,6 +40,25 @@ describe(`convertUIMessageToSSEStream`, () => {
     expect(result.length).toBe(1);
     expect(result[0]).toBe(`data: [DONE]\n\n`);
   });
+
+  test(`should call onComplete callback when stream ends`, async () => {
+    // Arrange
+    const chunks: Array<UIMessageChunk> = [
+      { type: `text-start`, id: `1` },
+      { type: `text-end`, id: `1` },
+    ];
+    const uiStream = convertArrayToStream(chunks);
+    let completed = false;
+
+    // Act
+    const sseStream = convertUIMessageToSSEStream(uiStream, () => {
+      completed = true;
+    });
+    await convertStreamToArray(sseStream);
+
+    // Assert
+    expect(completed).toBe(true);
+  });
 });
 
 describe(`round-trip conversion`, () => {

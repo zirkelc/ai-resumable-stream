@@ -1,10 +1,8 @@
-import type { UIMessageChunk } from "ai";
+import { JsonToSseTransformStream, type UIMessageChunk } from "ai";
 import { type AsyncIterableStream, createAsyncIterableStream } from "ai-stream-utils";
 import type { createClient } from "redis";
 import { createResumableStreamContext } from "resumable-stream";
-import { createEagerStream } from "./create-eager-stream.js";
 import { convertSSEToUIMessageStream } from "./convert-sse-stream-to-ui-message-stream.js";
-import { convertUIMessageToSSEStream } from "./convert-ui-message-stream-to-sse-stream.js";
 
 const KEY_PREFIX = `ai-resumable-stream`;
 
@@ -42,6 +40,9 @@ type CreateResumableUIMessageStream = {
 
 /**
  * Creates a resumable context for starting, resuming and stopping UI message streams.
+ *
+ * Leverages resumable-stream's internal eager drain pattern which drains the source
+ * eagerly and enqueues directly to the output stream.
  */
 export async function createResumableUIMessageStream(options: CreateResumableUIMessageStream) {
   const { streamId, abortController, publisher, subscriber, waitUntil = null } = options;
@@ -90,33 +91,94 @@ export async function createResumableUIMessageStream(options: CreateResumableUIM
 
   /**
    * Start a new stream by creating a new resumable stream in Redis and returning a client stream for the UI.
+   *
+   * Uses a single drain loop that:
+   * 1. Reads from source stream
+   * 2. Sends UIMessageChunk directly to client stream (no conversion)
+   * 3. Sends SSE to Redis stream → resumable-stream → Redis
+   * 4. Propagates errors to both streams
    */
   async function startStream(
     stream: ReadableStream<UIMessageChunk>,
   ): Promise<AsyncIterableStream<UIMessageChunk>> {
     /**
-     * Tee the stream into two streams: one for the client and one for the resumable stream in Redis.
+     * Track client disconnect to avoid unbounded memory growth
      */
-    const [clientStream, resumableStream] = stream.tee();
+    let clientCancelled = false;
 
     /**
-     * Convert stream of UI message chunks to SSE-formatted stream for storage in Redis.
+     * Client stream for sending UI message chunks directly to the client without conversion.
      */
-    const sseStream = convertUIMessageToSSEStream(resumableStream);
+    let clientController: ReadableStreamDefaultController<UIMessageChunk>;
+    const clientStream = new ReadableStream<UIMessageChunk>({
+      start(controller) {
+        clientController = controller;
+      },
+      cancel() {
+        clientCancelled = true;
+      },
+    });
 
     /**
-     * Create a new resumable stream in Redis with the stream ID.
+     * Redis stream with SSE conversion for resumable-stream persistence in Redis.
+     * JsonToSseTransformStream converts UIMessageChunk → SSE string and adds [DONE] on flush.
      */
-    await context.createNewResumableStream(streamId, () => sseStream);
+    let redisController: ReadableStreamDefaultController<UIMessageChunk>;
+    const redisStream = new ReadableStream<UIMessageChunk>({
+      start(controller) {
+        redisController = controller;
+      },
+    }).pipeThrough(new JsonToSseTransformStream());
 
     /**
-     * Eagerly drain the client stream.
-     * This prevents backpressure from tee() when the user doesn't consume the stream.
-     * Auto-unsubscribe on completion or cancel.
+     * Get reader synchronously to fail fast if stream is locked
      */
-    const eagerStream = createEagerStream(clientStream, () => unsubscribe());
+    const reader = stream.getReader();
 
-    return createAsyncIterableStream(eagerStream);
+    /**
+     * Register Redis stream with resumable-stream for persistence
+     */
+    await context.createNewResumableStream(streamId, () => redisStream);
+
+    /**
+     * Single drain loop.
+     * Continues draining to Redis even if client disconnects
+     */
+    (async () => {
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) {
+            redisController.close();
+            if (!clientCancelled) {
+              clientController.close();
+            }
+            break;
+          }
+          /**
+           * Always enqueue to Redis for persistence
+           */
+          redisController.enqueue(value);
+
+          /**
+           * Only enqueue to client if still connected to avoid unbounded memory growth
+           */
+          if (!clientCancelled) {
+            clientController.enqueue(value);
+          }
+        }
+      } catch (error) {
+        redisController.error(error);
+        if (!clientCancelled) {
+          clientController.error(error);
+        }
+      } finally {
+        reader.releaseLock();
+        unsubscribe();
+      }
+    })();
+
+    return createAsyncIterableStream(clientStream);
   }
 
   /**
