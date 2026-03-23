@@ -333,7 +333,7 @@ async function startStream(
 ): Promise<AsyncIterableStream<UIMessageChunk>>;
 ```
 
-Starts a new resumable stream. The input stream is tee'd—one branch goes to the client, the other is persisted to Redis.
+Starts a new resumable stream. A single drain loop reads from the source and sends chunks to both the client and Redis simultaneously. If the client disconnects, chunks continue flowing to Redis for resumability.
 
 #### `resumeStream`
 
