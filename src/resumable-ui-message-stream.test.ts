@@ -236,7 +236,9 @@ describe(`createResumableUIMessageStream`, () => {
   describe(`Errors`, () => {
     /**
      * Suppress expected unhandled errors in fault tolerance tests.
-     * resumable-stream doesn't handle errors from tee'd branches or Redis disconnects.
+     * These handlers ignore known stream pipeline errors and Redis connection
+     * lifecycle errors (e.g. disconnects / closed sockets) that are expected
+     * when exercising failure scenarios.
      */
     const rejectionHandler = (reason: Error) => {
       const expectedErrors = [`Stream error`, `The client is closed`];
