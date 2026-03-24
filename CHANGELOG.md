@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/zirkelc/ai-resumable-stream/compare/v1.2.0...v1.2.1) (2026-03-24)
+
+
+### Bug Fixes
+
+* switch to single drain loop for memory efficiency ([#8](https://github.com/zirkelc/ai-resumable-stream/issues/8)) ([e567227](https://github.com/zirkelc/ai-resumable-stream/commit/e567227ea70679dab2b5e520707324012ad20bf9))
+
 ## [1.2.0](https://github.com/zirkelc/ai-resumable-stream/compare/v1.1.1...v1.2.0) (2026-02-17)
 
 
