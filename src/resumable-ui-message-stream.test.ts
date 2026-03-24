@@ -235,8 +235,9 @@ describe(`createResumableUIMessageStream`, () => {
 
   describe(`Errors`, () => {
     /**
-     * Suppress expected unhandled errors in fault tolerance tests.
-     * resumable-stream doesn't handle errors from tee'd branches or Redis disconnects.
+     * Suppress expected stream pipeline errors and Redis connection
+     * lifecycle errors (e.g. disconnects / closed sockets) that are
+     * expected when exercising failure scenarios.
      */
     const rejectionHandler = (reason: Error) => {
       const expectedErrors = [`Stream error`, `The client is closed`];
@@ -269,15 +270,19 @@ describe(`createResumableUIMessageStream`, () => {
       const badPublisher = createClient({ url: `redis://invalid:9999` });
       const badSubscriber = createClient({ url: `redis://invalid:9999` });
 
-      // Act & Assert
-      const promise = createResumableUIMessageStream({
-        streamId: `test-stream`,
-        publisher: badPublisher,
-        subscriber: badSubscriber,
-        waitUntil,
-      });
+      try {
+        // Act & Assert
+        const promise = createResumableUIMessageStream({
+          streamId: `test-stream`,
+          publisher: badPublisher,
+          subscriber: badSubscriber,
+          waitUntil,
+        });
 
-      await expect(promise).rejects.toThrow();
+        await expect(promise).rejects.toThrow();
+      } finally {
+        await Promise.allSettled([badPublisher.disconnect(), badSubscriber.disconnect()]);
+      }
     });
 
     test(`should fail when source stream is locked`, async () => {

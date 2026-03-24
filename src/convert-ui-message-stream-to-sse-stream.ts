@@ -1,4 +1,4 @@
-import { JsonToSseTransformStream, type UIMessageChunk } from "ai";
+import { type UIMessageChunk } from "ai";
 
 export const SSE_DONE = `data: [DONE]\n\n`;
 

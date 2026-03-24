@@ -136,9 +136,15 @@ export async function createResumableUIMessageStream(options: CreateResumableUIM
     const reader = stream.getReader();
 
     /**
-     * Register Redis stream with resumable-stream for persistence
+     * Register Redis stream with resumable-stream for persistence.
+     * Release reader lock if registration fails to avoid locking the source stream.
      */
-    await context.createNewResumableStream(streamId, () => redisStream);
+    try {
+      await context.createNewResumableStream(streamId, () => redisStream);
+    } catch (error) {
+      reader.releaseLock();
+      throw error;
+    }
 
     /**
      * Single drain loop.
@@ -161,9 +167,17 @@ export async function createResumableUIMessageStream(options: CreateResumableUIM
           redisController!.enqueue(value);
 
           /**
-           * Only enqueue to client if still connected to avoid unbounded memory growth
+           * Only enqueue to client if still connected to avoid unbounded memory growth.
+           *
            */
           if (!clientCancelled) {
+            // TODO: Consider treating sustained backpressure as implicit disconnect
+            // to handle clients that stay connected but stop reading:
+            // const desiredSize = clientController!.desiredSize;
+            // if (desiredSize !== null && desiredSize <= 0) {
+            //   clientCancelled = true;
+            //   try { clientController!.close(); } catch {}
+            // }
             clientController!.enqueue(value);
           }
         }
@@ -174,7 +188,11 @@ export async function createResumableUIMessageStream(options: CreateResumableUIM
         }
       } finally {
         reader.releaseLock();
-        unsubscribe();
+        try {
+          await unsubscribe();
+        } catch {
+          /** Ignore errors from unsubscribe during cleanup */
+        }
       }
     })();
 
