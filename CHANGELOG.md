@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.3.0](https://github.com/zirkelc/ai-resumable-stream/compare/v1.2.1...v1.3.0) (2026-04-02)
+
+
+### Features
+
+* add onFlush callback to startStream for post-drain cleanup ([04b97cb](https://github.com/zirkelc/ai-resumable-stream/commit/04b97cb3931d522cb60c6d16d6559c5c7d319bd3))
+
+
+### Bug Fixes
+
+* remove old files ([4ad2796](https://github.com/zirkelc/ai-resumable-stream/commit/4ad2796ecae5097d9dd86953088713cbddbff554))
+* skills ([a40a1d9](https://github.com/zirkelc/ai-resumable-stream/commit/a40a1d9d921b44376591e123bd77a3de40f462c6))
+
 ## [1.2.1](https://github.com/zirkelc/ai-resumable-stream/compare/v1.2.0...v1.2.1) (2026-03-24)
 
 
