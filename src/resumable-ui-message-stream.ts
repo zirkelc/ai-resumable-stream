@@ -36,6 +36,31 @@ type CreateResumableUIMessageStream = {
    * the function getting suspended.
    */
   waitUntil?: (promise: Promise<unknown>) => void;
+  /**
+   * When true, the resumable-stream producer stays alive after the source stream ends.
+   * This keeps the pub/sub subscription active so that late resume requests
+   * (during post-stream work like DB writes) can still be served from the in-memory buffer.
+   *
+   * Call `cleanup()` on the returned context when post-stream work is complete
+   * to trigger the normal teardown (sentinel=DONE, unsubscribe, DONE_MESSAGE).
+   *
+   * @default false
+   */
+  keepAlive?: boolean;
+};
+
+type ResumableUIMessageStreamBase = {
+  startStream: (
+    stream: ReadableStream<UIMessageChunk>,
+    options?: { onFlush?: () => void | Promise<void> },
+  ) => Promise<AsyncIterableStream<UIMessageChunk>>;
+  resumeStream: () => Promise<AsyncIterableStream<UIMessageChunk> | null>;
+  stopStream: () => Promise<void>;
+};
+
+type ResumableUIMessageStreamWithCleanup = ResumableUIMessageStreamBase & {
+  cleanup: () => Promise<void>;
+  [Symbol.asyncDispose]: () => Promise<void>;
 };
 
 /**
@@ -44,8 +69,23 @@ type CreateResumableUIMessageStream = {
  * Leverages resumable-stream's internal eager drain pattern which drains the source
  * eagerly and enqueues directly to the output stream.
  */
-export async function createResumableUIMessageStream(options: CreateResumableUIMessageStream) {
-  const { streamId, abortController, publisher, subscriber, waitUntil = null } = options;
+export async function createResumableUIMessageStream(
+  options: CreateResumableUIMessageStream & { keepAlive: true },
+): Promise<ResumableUIMessageStreamWithCleanup>;
+export async function createResumableUIMessageStream(
+  options: CreateResumableUIMessageStream,
+): Promise<ResumableUIMessageStreamBase>;
+export async function createResumableUIMessageStream(
+  options: CreateResumableUIMessageStream,
+): Promise<ResumableUIMessageStreamBase | ResumableUIMessageStreamWithCleanup> {
+  const {
+    streamId,
+    abortController,
+    publisher,
+    subscriber,
+    waitUntil = null,
+    keepAlive = false,
+  } = options;
 
   const stopChannel = `${KEY_PREFIX}:stop:${streamId}`;
 
@@ -60,6 +100,12 @@ export async function createResumableUIMessageStream(options: CreateResumableUIM
     publisher.isOpen ? Promise.resolve() : publisher.connect(),
     subscriber.isOpen ? Promise.resolve() : subscriber.connect(),
   ]);
+
+  /**
+   * Hoisted so cleanup() can close it after post-stream work when keepAlive is true.
+   */
+  let redisController: ReadableStreamDefaultController<UIMessageChunk> | null = null;
+  let cleanedUp = false;
 
   /**
    * Unsubscribe from stop channel
@@ -125,7 +171,6 @@ export async function createResumableUIMessageStream(options: CreateResumableUIM
      * Redis stream with SSE conversion for resumable-stream persistence in Redis.
      * JsonToSseTransformStream converts UIMessageChunk → SSE string and adds [DONE] on flush.
      */
-    let redisController: ReadableStreamDefaultController<UIMessageChunk>;
     const redisStream = new ReadableStream<UIMessageChunk>({
       start(controller) {
         redisController = controller;
@@ -157,7 +202,9 @@ export async function createResumableUIMessageStream(options: CreateResumableUIM
         while (true) {
           const { done, value } = await reader.read();
           if (done) {
-            redisController!.close();
+            if (!keepAlive) {
+              redisController!.close();
+            }
             if (!clientCancelled) {
               clientController!.close();
             }
@@ -230,6 +277,31 @@ export async function createResumableUIMessageStream(options: CreateResumableUIM
    */
   async function stopStream(): Promise<void> {
     await publisher.publish(stopChannel, `stop`);
+  }
+
+  if (keepAlive) {
+    /**
+     * Close the Redis stream to trigger resumable-stream's normal teardown
+     * (sentinel=DONE, unsubscribe from request channel, DONE_MESSAGE to listeners).
+     * Idempotent — safe to call multiple times.
+     */
+    async function cleanup(): Promise<void> {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      try {
+        redisController?.close();
+      } catch {
+        /** Already closed (e.g. error path) */
+      }
+    }
+
+    return {
+      startStream,
+      resumeStream,
+      stopStream,
+      cleanup,
+      [Symbol.asyncDispose]: cleanup,
+    };
   }
 
   return { startStream, resumeStream, stopStream };

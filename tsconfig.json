@@ -1,6 +1,8 @@
 {
   // https://github.com/total-typescript/tsconfig
   "extends": "@total-typescript/tsconfig/tsc/no-dom/library",
-  "compilerOptions": {},
+  "compilerOptions": {
+    "lib": ["es2024"]
+  },
   "include": ["src", "test"]
 }
