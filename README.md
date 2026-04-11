@@ -301,6 +301,42 @@ await publisher.quit();
 await subscriber.quit();
 ```
 
+### Keep Alive
+
+By default, the resumable-stream producer tears down immediately when the source stream ends. This means resume requests arriving during post-stream work (e.g. saving the assistant message to the database) will get `null` back, even though the full response is still in memory.
+
+Pass a `keepAlive` promise to `startStream` to defer teardown until your post-stream work is complete:
+
+```typescript
+const { promise, resolve } = Promise.withResolvers<void>();
+
+const stream = await context.startStream(result.toUIMessageStream(), {
+  keepAlive: promise,
+});
+
+yield* stream;
+
+// Producer stays alive — resume requests are served from the in-memory buffer
+await saveAssistantMessage(result);
+
+// Done — producer tears down
+resolve();
+```
+
+### Flush
+
+The `onFlush` callback is invoked after the producer has torn down (Redis stream closed, sentinel set to DONE). Use it for cleanup tasks like removing the active stream ID from the database. Errors thrown by `onFlush` are silently caught.
+
+```typescript
+const stream = await context.startStream(result.toUIMessageStream(), {
+  onFlush: async () => {
+    await saveChat({ chatId, activeStreamId: null });
+  },
+});
+```
+
+When used together with `keepAlive`, `onFlush` fires after the `keepAlive` promise resolves and the producer tears down.
+
 ## API Reference
 
 ### `createResumableUIMessageStream`
@@ -309,7 +345,7 @@ await subscriber.quit();
 async function createResumableUIMessageStream(options: CreateResumableUIMessageStream): Promise<{
   startStream: (
     stream: ReadableStream<UIMessageChunk>,
-    options?: { onFlush?: () => void | Promise<void> },
+    options?: StartStreamOptions,
   ) => Promise<AsyncIterableStream<UIMessageChunk>>;
   resumeStream: () => Promise<AsyncIterableStream<UIMessageChunk> | null>;
   stopStream: () => Promise<void>;
@@ -322,6 +358,11 @@ type CreateResumableUIMessageStream = {
   abortController?: AbortController;
   waitUntil?: (promise: Promise<unknown>) => void;
 };
+
+type StartStreamOptions = {
+  keepAlive?: Promise<void>;
+  onFlush?: () => void | Promise<void>;
+};
 ```
 
 ### Return Values
@@ -331,13 +372,28 @@ type CreateResumableUIMessageStream = {
 ```typescript
 async function startStream(
   stream: ReadableStream<UIMessageChunk>,
-  options?: { onFlush?: () => void | Promise<void> },
+  options?: StartStreamOptions,
 ): Promise<AsyncIterableStream<UIMessageChunk>>;
+
+type StartStreamOptions = {
+  keepAlive?: Promise<void>;
+  onFlush?: () => void | Promise<void>;
+};
 ```
 
 Starts a new resumable stream. A single drain loop reads from the source and sends chunks to both the client and Redis simultaneously. If the client disconnects, chunks continue flowing to Redis for resumability.
 
-The optional `onFlush` callback is invoked after the stream finishes draining to Redis and cleanup is complete, regardless of how the stream ended (complete, error, or abort). Use it for cleanup tasks like removing the active stream ID from the database. Errors thrown by `onFlush` are silently caught.
+##### `keepAlive`
+
+A promise that defers closing the Redis stream until it resolves. This keeps the resumable-stream producer alive after the source stream ends, so late resume requests (e.g. during post-stream DB writes) can still be served from the in-memory chunk buffer.
+
+If the promise rejects, the producer tears down normally. If the source stream errors, the `keepAlive` promise is not awaited.
+
+##### `onFlush`
+
+A callback invoked after the Redis stream is closed and the producer has torn down, regardless of how the stream ended (complete, error, or abort). Use it for cleanup tasks like removing the active stream ID from the database. Errors thrown by `onFlush` are silently caught.
+
+When used together with `keepAlive`, `onFlush` fires after the `keepAlive` promise resolves and the producer tears down.
 
 #### `resumeStream`
 

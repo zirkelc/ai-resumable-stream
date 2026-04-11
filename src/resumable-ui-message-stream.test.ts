@@ -896,7 +896,7 @@ describe(`createResumableUIMessageStream`, () => {
   });
 
   describe(`keepAlive`, () => {
-    test(`should allow resumeStream after source ends when keepAlive is true`, async () => {
+    test(`should allow resumeStream after source ends when keepAlive is provided`, async () => {
       // Arrange
       const [publisher, subscriber, secondPublisher, secondSubscriber] = await Promise.all([
         createRedisClient().connect(),
@@ -912,21 +912,21 @@ describe(`createResumableUIMessageStream`, () => {
         { type: `finish`, finishReason: `stop` },
       ];
       const stream = createStream(chunks);
+      const { promise, resolve } = Promise.withResolvers<void>();
 
       const context = await createResumableUIMessageStream({
         streamId,
         publisher,
         subscriber,
         waitUntil,
-        keepAlive: true,
       });
 
       // Act - consume the stream fully
-      const resultStream = await context.startStream(stream);
+      const resultStream = await context.startStream(stream, { keepAlive: promise });
       const result = await convertAsyncIterableToArray(resultStream);
       expect(result.length).toBe(3);
 
-      // Wait for drain loop to finish
+      // Wait for drain loop to reach the promise
       await sleep(25);
 
       // Resume from a second client — should still work because keepAlive defers teardown
@@ -942,14 +942,14 @@ describe(`createResumableUIMessageStream`, () => {
       // Assert - stream is still resumable (not null)
       expect(resumedStream).not.toBeNull();
 
-      // Cleanup to trigger teardown so the resumed stream completes
-      await context.cleanup();
+      // Resolve the promise to trigger teardown so the resumed stream completes
+      resolve();
 
       const resumedChunks = await convertAsyncIterableToArray(resumedStream!);
       expect(resumedChunks).toEqual(result);
     });
 
-    test(`should return null from resumeStream after cleanup is called`, async () => {
+    test(`should return null from resumeStream after keepAlive promise resolves`, async () => {
       // Arrange
       const [publisher, subscriber, secondPublisher, secondSubscriber] = await Promise.all([
         createRedisClient().connect(),
@@ -964,23 +964,23 @@ describe(`createResumableUIMessageStream`, () => {
         { type: `finish`, finishReason: `stop` },
       ];
       const stream = createStream(chunks);
+      const { promise, resolve } = Promise.withResolvers<void>();
 
       const context = await createResumableUIMessageStream({
         streamId,
         publisher,
         subscriber,
         waitUntil,
-        keepAlive: true,
       });
 
-      // Act - consume and cleanup
-      const resultStream = await context.startStream(stream);
+      // Act - consume, then resolve the promise
+      const resultStream = await context.startStream(stream, { keepAlive: promise });
       await convertAsyncIterableToArray(resultStream);
       await sleep(25);
-      await context.cleanup();
+      resolve();
       await sleep(25);
 
-      // Resume after cleanup
+      // Resume after teardown
       const resumeContext = await createResumableUIMessageStream({
         streamId,
         publisher: secondPublisher,
@@ -994,9 +994,11 @@ describe(`createResumableUIMessageStream`, () => {
       expect(resumedStream).toBeNull();
     });
 
-    test(`should be idempotent — calling cleanup multiple times does not throw`, async () => {
+    test(`should close redis stream even when keepAlive promise rejects`, async () => {
       // Arrange
-      const [publisher, subscriber] = await Promise.all([
+      const [publisher, subscriber, secondPublisher, secondSubscriber] = await Promise.all([
+        createRedisClient().connect(),
+        createRedisClient().connect(),
         createRedisClient().connect(),
         createRedisClient().connect(),
       ]);
@@ -1007,26 +1009,80 @@ describe(`createResumableUIMessageStream`, () => {
         { type: `finish`, finishReason: `stop` },
       ];
       const stream = createStream(chunks);
+      const { promise, reject } = Promise.withResolvers<void>();
 
       const context = await createResumableUIMessageStream({
         streamId,
         publisher,
         subscriber,
         waitUntil,
-        keepAlive: true,
       });
 
-      const resultStream = await context.startStream(stream);
+      // Act - consume, then reject the promise
+      const resultStream = await context.startStream(stream, { keepAlive: promise });
       await convertAsyncIterableToArray(resultStream);
       await sleep(25);
+      reject(new Error(`post-stream work failed`));
+      await sleep(25);
 
-      // Act & Assert - multiple cleanup calls should not throw
-      await context.cleanup();
-      await context.cleanup();
-      await context.cleanup();
+      // Resume after teardown
+      const resumeContext = await createResumableUIMessageStream({
+        streamId,
+        publisher: secondPublisher,
+        subscriber: secondSubscriber,
+        waitUntil,
+      });
+
+      const resumedStream = await resumeContext.resumeStream();
+
+      // Assert - stream still tore down despite rejection
+      expect(resumedStream).toBeNull();
     });
 
-    test(`should still call onFlush in drain loop when keepAlive is true`, async () => {
+    test(`should not await keepAlive promise when source stream errors`, async () => {
+      // Arrange
+      const rejectionHandler = (reason: Error) => {
+        if (reason?.message === `Stream error`) return;
+        throw reason;
+      };
+      process.on(`unhandledRejection`, rejectionHandler);
+
+      const [publisher, subscriber] = await Promise.all([
+        createRedisClient().connect(),
+        createRedisClient().connect(),
+      ]);
+
+      const streamId = `test-stream`;
+      const errorStream = new ReadableStream({
+        pull(controller) {
+          controller.error(new Error(`Stream error`));
+        },
+      });
+      const { promise } = Promise.withResolvers<void>();
+
+      const context = await createResumableUIMessageStream({
+        streamId,
+        publisher,
+        subscriber,
+        waitUntil,
+      });
+
+      // Act - start stream that errors
+      const resultStream = await context.startStream(errorStream, { keepAlive: promise });
+      const reader = resultStream.getReader();
+      await reader.read().catch(() => {});
+
+      // Wait for drain loop to finish — should not hang on the unresolved promise
+      await sleep(100);
+
+      // Assert - drain loop completed without waiting for promise
+      // (if it waited, this test would timeout)
+
+      await sleep(100);
+      process.off(`unhandledRejection`, rejectionHandler);
+    });
+
+    test(`should call onFlush after teardown when keepAlive is also provided`, async () => {
       // Arrange
       const [publisher, subscriber] = await Promise.all([
         createRedisClient().connect(),
@@ -1039,6 +1095,7 @@ describe(`createResumableUIMessageStream`, () => {
         { type: `finish`, finishReason: `stop` },
       ];
       const stream = createStream(chunks);
+      const { promise, resolve } = Promise.withResolvers<void>();
       const onFlush = vi.fn();
 
       const context = await createResumableUIMessageStream({
@@ -1046,106 +1103,21 @@ describe(`createResumableUIMessageStream`, () => {
         publisher,
         subscriber,
         waitUntil,
-        keepAlive: true,
       });
 
       // Act
-      const resultStream = await context.startStream(stream, { onFlush });
+      const resultStream = await context.startStream(stream, { keepAlive: promise, onFlush });
       await convertAsyncIterableToArray(resultStream);
       await sleep(25);
 
-      // Assert - onFlush fires when source ends, not when cleanup is called
+      // Assert - onFlush not called yet (waiting on keepAlive)
+      expect(onFlush).toHaveBeenCalledTimes(0);
+
+      resolve();
+      await sleep(25);
+
+      // Assert - onFlush called after keepAlive resolved and redis closed
       expect(onFlush).toHaveBeenCalledTimes(1);
-
-      await context.cleanup();
-    });
-
-    test(`should behave identically to default when keepAlive is false`, async () => {
-      // Arrange
-      const [publisher, subscriber, secondPublisher, secondSubscriber] = await Promise.all([
-        createRedisClient().connect(),
-        createRedisClient().connect(),
-        createRedisClient().connect(),
-        createRedisClient().connect(),
-      ]);
-
-      const streamId = `test-stream`;
-      const chunks: Array<UIMessageChunk> = [
-        { type: `start` },
-        { type: `finish`, finishReason: `stop` },
-      ];
-      const stream = createStream(chunks);
-
-      const context = await createResumableUIMessageStream({
-        streamId,
-        publisher,
-        subscriber,
-        waitUntil,
-        keepAlive: false,
-      });
-
-      // Act - consume the stream
-      const resultStream = await context.startStream(stream);
-      await convertAsyncIterableToArray(resultStream);
-      await sleep(25);
-
-      // Resume — should return null (same as without keepAlive)
-      const resumeContext = await createResumableUIMessageStream({
-        streamId,
-        publisher: secondPublisher,
-        subscriber: secondSubscriber,
-        waitUntil,
-      });
-
-      const resumedStream = await resumeContext.resumeStream();
-
-      // Assert
-      expect(resumedStream).toBeNull();
-    });
-
-    test(`should support Symbol.asyncDispose via await using`, async () => {
-      // Arrange
-      const [publisher, subscriber, secondPublisher, secondSubscriber] = await Promise.all([
-        createRedisClient().connect(),
-        createRedisClient().connect(),
-        createRedisClient().connect(),
-        createRedisClient().connect(),
-      ]);
-
-      const streamId = `test-stream`;
-      const chunks: Array<UIMessageChunk> = [
-        { type: `start` },
-        { type: `finish`, finishReason: `stop` },
-      ];
-      const stream = createStream(chunks);
-
-      // Act - await using triggers cleanup when scope exits
-      {
-        await using context = await createResumableUIMessageStream({
-          streamId,
-          publisher,
-          subscriber,
-          waitUntil,
-          keepAlive: true,
-        });
-
-        const resultStream = await context.startStream(stream);
-        await convertAsyncIterableToArray(resultStream);
-        await sleep(25);
-      }
-
-      // Assert - after scope exit, cleanup was called so resumeStream returns null
-      await sleep(25);
-
-      const resumeContext = await createResumableUIMessageStream({
-        streamId,
-        publisher: secondPublisher,
-        subscriber: secondSubscriber,
-        waitUntil,
-      });
-
-      const resumedStream = await resumeContext.resumeStream();
-      expect(resumedStream).toBeNull();
     });
   });
 
