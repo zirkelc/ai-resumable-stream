@@ -314,7 +314,7 @@ const stream = await context.startStream(result.toUIMessageStream(), {
   keepAlive: promise,
 });
 
-yield* stream;
+yield * stream;
 
 // Producer stays alive — resume requests are served from the in-memory buffer
 await saveAssistantMessage(result);
