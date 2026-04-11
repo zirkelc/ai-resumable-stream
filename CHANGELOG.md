@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/zirkelc/ai-resumable-stream/compare/v1.3.0...v1.4.0) (2026-04-11)
+
+
+### Features
+
+* add keepAlive option to defer resumable-stream teardown ([#11](https://github.com/zirkelc/ai-resumable-stream/issues/11)) ([e84e7f9](https://github.com/zirkelc/ai-resumable-stream/commit/e84e7f928f0658f97351c39d6bb3f73d8f1dea5d))
+
 ## [1.3.0](https://github.com/zirkelc/ai-resumable-stream/compare/v1.2.1...v1.3.0) (2026-04-02)
 
 
