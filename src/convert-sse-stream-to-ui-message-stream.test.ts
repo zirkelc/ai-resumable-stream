@@ -1,7 +1,7 @@
+import { Stream } from "ai-test-kit/language";
+import { UIChunks } from "ai-test-kit/ui";
 import { describe, expect, test } from "vitest";
-import { convertArrayToStream } from "ai-stream-utils";
 import { convertSSEToUIMessageStream } from "./convert-sse-stream-to-ui-message-stream.js";
-import { convertStreamToArray } from "ai-stream-utils";
 
 describe(`convertSSEToUIMessageStream`, () => {
   test(`should convert SSE-formatted strings to UI message chunks`, async () => {
@@ -11,27 +11,27 @@ describe(`convertSSEToUIMessageStream`, () => {
       `data: {"type":"text-delta","id":"1","delta":"Hello"}\n\n`,
       `data: {"type":"text-end","id":"1"}\n\n`,
     ];
-    const sseStream = convertArrayToStream(sseStrings);
+    const sseStream = Stream.from(sseStrings);
 
     // Act
     const uiStream = convertSSEToUIMessageStream(sseStream);
-    const result = await convertStreamToArray(uiStream);
+    const result = await Stream.toArray(uiStream);
 
     // Assert
     expect(result.length).toBe(3);
-    expect(result[0]).toEqual({ type: `text-start`, id: `1` });
-    expect(result[1]).toEqual({ type: `text-delta`, id: `1`, delta: `Hello` });
-    expect(result[2]).toEqual({ type: `text-end`, id: `1` });
+    expect(result[0]).toEqual(UIChunks.textStart({ id: `1` }));
+    expect(result[1]).toEqual(UIChunks.textDelta({ id: `1`, delta: `Hello` }));
+    expect(result[2]).toEqual(UIChunks.textEnd({ id: `1` }));
   });
 
   test(`should handle empty stream`, async () => {
     // Arrange
     const sseStrings: Array<string> = [];
-    const sseStream = convertArrayToStream(sseStrings);
+    const sseStream = Stream.from(sseStrings);
 
     // Act
     const uiStream = convertSSEToUIMessageStream(sseStream);
-    const result = await convertStreamToArray(uiStream);
+    const result = await Stream.toArray(uiStream);
 
     // Assert
     expect(result.length).toBe(0);
@@ -43,14 +43,14 @@ describe(`convertSSEToUIMessageStream`, () => {
       `data: {"type":"text-start","id":"1"}\n\n`,
       `data: {"type":"text-end","id":"1"}\n\n`,
     ];
-    const sseStream = convertArrayToStream(sseStrings);
+    const sseStream = Stream.from(sseStrings);
     let completed = false;
 
     // Act
     const uiStream = convertSSEToUIMessageStream(sseStream, () => {
       completed = true;
     });
-    await convertStreamToArray(uiStream);
+    await Stream.toArray(uiStream);
 
     // Assert
     expect(completed).toBe(true);

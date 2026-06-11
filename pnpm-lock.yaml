@@ -33,6 +33,9 @@ importers:
       ai:
         specifier: ^6.0.79
         version: 6.0.86(zod@4.3.6)
+      ai-test-kit:
+        specifier: 0.0.1
+        version: 0.0.1(@ai-sdk/provider-utils@4.0.15(zod@4.3.6))(@ai-sdk/provider@3.0.8)(ai@6.0.86(zod@4.3.6))(vitest@4.0.18(@opentelemetry/api@1.9.0)(@types/node@25.2.3)(tsx@4.21.0)(yaml@2.8.2))
       husky:
         specifier: ^9.1.7
         version: 9.1.7
@@ -1022,6 +1025,14 @@ packages:
     resolution: {integrity: sha512-mmH5/+1ns3NGNH58u0Au9LjsXFmY2+a4p0GrM37EMFjR7hLHOFDZm3jmF6C3fXOQJIgv/kx3x+LpY5AzQyD6EQ==}
     peerDependencies:
       ai: 5.x || 6.x
+
+  ai-test-kit@0.0.1:
+    resolution: {integrity: sha512-VQ2W9XIyEASou3AIqr/wNxLZ0Ae+C/gXc8kfoJ/HgOyhhenk4JosBT+jjSXWnPU95BHtVzJHvVHwrJN6QasiFw==}
+    peerDependencies:
+      '@ai-sdk/provider': ^3.0.0
+      '@ai-sdk/provider-utils': ^4.0.0
+      ai: 5.x || 6.x
+      vitest: '>=3'
 
   ai@6.0.86:
     resolution: {integrity: sha512-U2W2LBCHA/pr0Ui7vmmsjBiLEzBbZF3yVHNy7Rbzn7IX+SvoQPFM5rN74hhfVzZoE8zBuGD4nLLk+j0elGacvQ==}
@@ -2715,6 +2726,13 @@ snapshots:
     dependencies:
       ai: 6.0.86(zod@4.3.6)
       defu: 6.1.4
+
+  ai-test-kit@0.0.1(@ai-sdk/provider-utils@4.0.15(zod@4.3.6))(@ai-sdk/provider@3.0.8)(ai@6.0.86(zod@4.3.6))(vitest@4.0.18(@opentelemetry/api@1.9.0)(@types/node@25.2.3)(tsx@4.21.0)(yaml@2.8.2)):
+    dependencies:
+      '@ai-sdk/provider': 3.0.8
+      '@ai-sdk/provider-utils': 4.0.15(zod@4.3.6)
+      ai: 6.0.86(zod@4.3.6)
+      vitest: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@25.2.3)(tsx@4.21.0)(yaml@2.8.2)
 
   ai@6.0.86(zod@4.3.6):
     dependencies:

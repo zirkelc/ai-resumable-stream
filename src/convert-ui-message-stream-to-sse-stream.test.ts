@@ -1,23 +1,19 @@
 import type { UIMessageChunk } from "ai";
+import { Stream } from "ai-test-kit/language";
+import { UIChunks } from "ai-test-kit/ui";
 import { describe, expect, test } from "vitest";
-import { convertArrayToStream } from "ai-stream-utils";
 import { convertSSEToUIMessageStream } from "./convert-sse-stream-to-ui-message-stream.js";
-import { convertStreamToArray } from "ai-stream-utils";
 import { convertUIMessageToSSEStream } from "./convert-ui-message-stream-to-sse-stream.js";
 
 describe(`convertUIMessageToSSEStream`, () => {
   test(`should convert UI message chunks to SSE-formatted strings`, async () => {
     // Arrange
-    const chunks: Array<UIMessageChunk> = [
-      { type: `text-start`, id: `1` },
-      { type: `text-delta`, id: `1`, delta: `Hello` },
-      { type: `text-end`, id: `1` },
-    ];
-    const uiStream = convertArrayToStream(chunks);
+    const chunks: Array<UIMessageChunk> = UIChunks.text(`Hello`, { id: `1` });
+    const uiStream = Stream.from(chunks);
 
     // Act
     const sseStream = convertUIMessageToSSEStream(uiStream);
-    const result = await convertStreamToArray(sseStream);
+    const result = await Stream.toArray(sseStream);
 
     // Assert
     expect(result.length).toBe(4);
@@ -30,11 +26,11 @@ describe(`convertUIMessageToSSEStream`, () => {
   test(`should handle empty stream`, async () => {
     // Arrange
     const chunks: Array<UIMessageChunk> = [];
-    const uiStream = convertArrayToStream(chunks);
+    const uiStream = Stream.from(chunks);
 
     // Act
     const sseStream = convertUIMessageToSSEStream(uiStream);
-    const result = await convertStreamToArray(sseStream);
+    const result = await Stream.toArray(sseStream);
 
     // Assert
     expect(result.length).toBe(1);
@@ -44,17 +40,17 @@ describe(`convertUIMessageToSSEStream`, () => {
   test(`should call onFlush callback when stream ends`, async () => {
     // Arrange
     const chunks: Array<UIMessageChunk> = [
-      { type: `text-start`, id: `1` },
-      { type: `text-end`, id: `1` },
+      UIChunks.textStart({ id: `1` }),
+      UIChunks.textEnd({ id: `1` }),
     ];
-    const uiStream = convertArrayToStream(chunks);
+    const uiStream = Stream.from(chunks);
     let completed = false;
 
     // Act
     const sseStream = convertUIMessageToSSEStream(uiStream, () => {
       completed = true;
     });
-    await convertStreamToArray(sseStream);
+    await Stream.toArray(sseStream);
 
     // Assert
     expect(completed).toBe(true);
@@ -65,17 +61,17 @@ describe(`round-trip conversion`, () => {
   test(`should preserve chunks through UI → SSE → UI conversion`, async () => {
     // Arrange
     const originalChunks: Array<UIMessageChunk> = [
-      { type: `text-start`, id: `1` },
-      { type: `text-delta`, id: `1`, delta: `Hello` },
-      { type: `text-delta`, id: `1`, delta: ` world` },
-      { type: `text-end`, id: `1` },
+      UIChunks.textStart({ id: `1` }),
+      UIChunks.textDelta({ id: `1`, delta: `Hello` }),
+      UIChunks.textDelta({ id: `1`, delta: ` world` }),
+      UIChunks.textEnd({ id: `1` }),
     ];
-    const uiStream = convertArrayToStream(originalChunks);
+    const uiStream = Stream.from(originalChunks);
 
     // Act
     const sseStream = convertUIMessageToSSEStream(uiStream);
     const restoredUiStream = convertSSEToUIMessageStream(sseStream);
-    const result = await convertStreamToArray(restoredUiStream);
+    const result = await Stream.toArray(restoredUiStream);
 
     // Assert
     expect(result.length).toBe(4);
@@ -85,19 +81,17 @@ describe(`round-trip conversion`, () => {
   test(`should handle various chunk types`, async () => {
     // Arrange
     const originalChunks: Array<UIMessageChunk> = [
-      { type: `start-step` },
-      { type: `text-start`, id: `1` },
-      { type: `text-delta`, id: `1`, delta: `Thinking...` },
-      { type: `text-end`, id: `1` },
-      { type: `finish-step` },
-      { type: `finish`, finishReason: `stop` },
+      UIChunks.startStep(),
+      ...UIChunks.text(`Thinking...`, { id: `1` }),
+      UIChunks.finishStep(),
+      UIChunks.finish({ finishReason: `stop` }),
     ];
-    const uiStream = convertArrayToStream(originalChunks);
+    const uiStream = Stream.from(originalChunks);
 
     // Act
     const sseStream = convertUIMessageToSSEStream(uiStream);
     const restoredUiStream = convertSSEToUIMessageStream(sseStream);
-    const result = await convertStreamToArray(restoredUiStream);
+    const result = await Stream.toArray(restoredUiStream);
 
     // Assert
     expect(result.length).toBe(6);

@@ -1,7 +1,8 @@
 import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
 import type { UIMessageChunk } from "ai";
-import { simulateReadableStream, streamText } from "ai";
-import { MockLanguageModelV3 } from "ai/test";
+import { streamText } from "ai";
+import { MockLanguageModel, Stream, StreamParts } from "ai-test-kit/language";
+import { UIChunks } from "ai-test-kit/ui";
 import { consumeUIMessageStream } from "ai-stream-utils";
 import { convertAsyncIterableToArray } from "ai-stream-utils/utils";
 import { createClient } from "redis";
@@ -34,8 +35,7 @@ function sleep(ms: number): Promise<void> {
  * Create a stream from chunks with optional delay
  */
 function createStream<CHUNK>(chunks: Array<CHUNK>, delayMs = 0): ReadableStream<CHUNK> {
-  return simulateReadableStream({
-    chunks,
+  return Stream.simulate(chunks, {
     initialDelayInMs: delayMs,
     chunkDelayInMs: delayMs,
   });
@@ -52,8 +52,13 @@ function createMockModel(options: {
   const { chunks, delay = 0, abortSignal } = options;
   let pullCount = 0;
 
-  return new MockLanguageModelV3({
-    doStream: async () => ({
+  /**
+   * The custom stream is abort-aware: it errors with an AbortError as soon as the
+   * signal fires, which `MockLanguageModel`'s built-in simulated stream does not do.
+   * So drive `doStream` with a function response that returns this bespoke stream.
+   */
+  return MockLanguageModel.from({
+    stream: async () => ({
       stream: new ReadableStream({
         async pull(controller) {
           if (abortSignal?.aborted) {
@@ -152,8 +157,8 @@ describe(`createResumableUIMessageStream`, () => {
 
       const streamId = `test-stream`;
       const chunks: Array<UIMessageChunk> = [
-        { type: `start` },
-        { type: `finish`, finishReason: `stop` },
+        UIChunks.start(),
+        UIChunks.finish({ finishReason: `stop` }),
       ];
       const stream = createStream(chunks);
 
@@ -209,8 +214,8 @@ describe(`createResumableUIMessageStream`, () => {
       const streamId = `test-stream`;
       const abortController = new AbortController();
       const chunks: Array<UIMessageChunk> = [
-        { type: `start` },
-        { type: `finish`, finishReason: `stop` },
+        UIChunks.start(),
+        UIChunks.finish({ finishReason: `stop` }),
       ];
       const stream = createStream(chunks);
 
@@ -294,8 +299,8 @@ describe(`createResumableUIMessageStream`, () => {
 
       const streamId = `test-stream`;
       const chunks: Array<UIMessageChunk> = [
-        { type: `start` },
-        { type: `finish`, finishReason: `stop` },
+        UIChunks.start(),
+        UIChunks.finish({ finishReason: `stop` }),
       ];
       const stream = createStream(chunks);
       stream.getReader(); // Lock without releasing
@@ -352,10 +357,10 @@ describe(`createResumableUIMessageStream`, () => {
 
       const streamId = `test-stream`;
       const chunks: Array<UIMessageChunk> = [
-        { type: `start` },
-        { type: `text-delta`, id: `1`, delta: `Hello` },
-        { type: `text-delta`, id: `1`, delta: `World` },
-        { type: `finish`, finishReason: `stop` },
+        UIChunks.start(),
+        UIChunks.textDelta({ id: `1`, delta: `Hello` }),
+        UIChunks.textDelta({ id: `1`, delta: `World` }),
+        UIChunks.finish({ finishReason: `stop` }),
       ];
       const delayedStream = createStream(chunks, 50);
 
@@ -401,8 +406,8 @@ describe(`createResumableUIMessageStream`, () => {
 
       const streamId = `test-stream`;
       const chunks: Array<UIMessageChunk> = [
-        { type: `start` },
-        { type: `finish`, finishReason: `stop` },
+        UIChunks.start(),
+        UIChunks.finish({ finishReason: `stop` }),
       ];
       const stream = createStream(chunks);
       const waitUntilSpy = vi.fn();
@@ -434,15 +439,11 @@ describe(`createResumableUIMessageStream`, () => {
 
       const streamId = `test-stream`;
       const chunks: Array<UIMessageChunk> = [
-        { type: `start` },
-        { type: `start-step` },
-        { type: `text-start`, id: `1` },
-        { type: `text-delta`, id: `1`, delta: `Hello` },
-        { type: `text-delta`, id: `1`, delta: ` ` },
-        { type: `text-delta`, id: `1`, delta: `World` },
-        { type: `text-end`, id: `1` },
-        { type: `finish-step` },
-        { type: `finish`, finishReason: `stop` },
+        UIChunks.start(),
+        UIChunks.startStep(),
+        ...UIChunks.text(`Hello World`, { id: `1` }),
+        UIChunks.finishStep(),
+        UIChunks.finish({ finishReason: `stop` }),
       ];
       const stream = createStream(chunks);
       const context = await createResumableUIMessageStream({
@@ -495,8 +496,8 @@ describe(`createResumableUIMessageStream`, () => {
 
       const streamId = `test-stream`;
       const chunks: Array<UIMessageChunk> = [
-        { type: `start` },
-        { type: `finish`, finishReason: `stop` },
+        UIChunks.start(),
+        UIChunks.finish({ finishReason: `stop` }),
       ];
       const stream = createStream(chunks);
       const context = await createResumableUIMessageStream({
@@ -512,8 +513,8 @@ describe(`createResumableUIMessageStream`, () => {
 
       // Assert
       expect(result.length).toBe(2);
-      expect(result[0]).toEqual({ type: `start` });
-      expect(result[1]).toEqual({ type: `finish`, finishReason: `stop` });
+      expect(result[0]).toEqual(UIChunks.start());
+      expect(result[1]).toEqual(UIChunks.finish({ finishReason: `stop` }));
     });
 
     describe(`onFlush`, () => {
@@ -526,8 +527,8 @@ describe(`createResumableUIMessageStream`, () => {
 
         const streamId = `test-stream`;
         const chunks: Array<UIMessageChunk> = [
-          { type: `start` },
-          { type: `finish`, finishReason: `stop` },
+          UIChunks.start(),
+          UIChunks.finish({ finishReason: `stop` }),
         ];
         const stream = createStream(chunks);
         const onFlush = vi.fn();
@@ -605,10 +606,10 @@ describe(`createResumableUIMessageStream`, () => {
         const streamId = `test-stream`;
         const abortController = new AbortController();
         const chunks: Array<UIMessageChunk> = [
-          { type: `start` },
-          { type: `text-delta`, id: `1`, delta: `Hello` },
-          { type: `text-delta`, id: `1`, delta: `World` },
-          { type: `finish`, finishReason: `stop` },
+          UIChunks.start(),
+          UIChunks.textDelta({ id: `1`, delta: `Hello` }),
+          UIChunks.textDelta({ id: `1`, delta: `World` }),
+          UIChunks.finish({ finishReason: `stop` }),
         ];
         const delayedStream = createStream(chunks, 50);
         const onFlush = vi.fn();
@@ -646,8 +647,8 @@ describe(`createResumableUIMessageStream`, () => {
 
         const streamId = `test-stream`;
         const chunks: Array<UIMessageChunk> = [
-          { type: `start` },
-          { type: `finish`, finishReason: `stop` },
+          UIChunks.start(),
+          UIChunks.finish({ finishReason: `stop` }),
         ];
         const stream = createStream(chunks);
         let resumeResultInsideCallback:
@@ -695,8 +696,8 @@ describe(`createResumableUIMessageStream`, () => {
 
         const streamId = `test-stream`;
         const chunks: Array<UIMessageChunk> = [
-          { type: `start` },
-          { type: `finish`, finishReason: `stop` },
+          UIChunks.start(),
+          UIChunks.finish({ finishReason: `stop` }),
         ];
         const stream = createStream(chunks);
         const onFlush = vi.fn(() => {
@@ -775,15 +776,11 @@ describe(`createResumableUIMessageStream`, () => {
 
       const streamId = `test-stream`;
       const chunks: Array<UIMessageChunk> = [
-        { type: `start` },
-        { type: `start-step` },
-        { type: `text-start`, id: `1` },
-        { type: `text-delta`, id: `1`, delta: `Hello` },
-        { type: `text-delta`, id: `1`, delta: ` ` },
-        { type: `text-delta`, id: `1`, delta: `World` },
-        { type: `text-end`, id: `1` },
-        { type: `finish-step` },
-        { type: `finish`, finishReason: `stop` },
+        UIChunks.start(),
+        UIChunks.startStep(),
+        ...UIChunks.text(`Hello World`, { id: `1` }),
+        UIChunks.finishStep(),
+        UIChunks.finish({ finishReason: `stop` }),
       ];
       const stream = createStream(chunks);
       const context = await createResumableUIMessageStream({
@@ -818,15 +815,11 @@ describe(`createResumableUIMessageStream`, () => {
 
       const streamId = `test-stream`;
       const chunks: Array<UIMessageChunk> = [
-        { type: `start` },
-        { type: `start-step` },
-        { type: `text-start`, id: `1` },
-        { type: `text-delta`, id: `1`, delta: `Hello` },
-        { type: `text-delta`, id: `1`, delta: ` ` },
-        { type: `text-delta`, id: `1`, delta: `World` },
-        { type: `text-end`, id: `1` },
-        { type: `finish-step` },
-        { type: `finish`, finishReason: `stop` },
+        UIChunks.start(),
+        UIChunks.startStep(),
+        ...UIChunks.text(`Hello World`, { id: `1` }),
+        UIChunks.finishStep(),
+        UIChunks.finish({ finishReason: `stop` }),
       ];
       const delayedStream = createStream(chunks, 25);
       const abortController = new AbortController();
@@ -877,15 +870,11 @@ describe(`createResumableUIMessageStream`, () => {
       });
 
       const chunks: Array<UIMessageChunk> = [
-        { type: `start` },
-        { type: `start-step` },
-        { type: `text-start`, id: `1` },
-        { type: `text-delta`, id: `1`, delta: `Hello` },
-        { type: `text-delta`, id: `1`, delta: ` ` },
-        { type: `text-delta`, id: `1`, delta: `World` },
-        { type: `text-end`, id: `1` },
-        { type: `finish-step` },
-        { type: `finish`, finishReason: `stop` },
+        UIChunks.start(),
+        UIChunks.startStep(),
+        ...UIChunks.text(`Hello World`, { id: `1` }),
+        UIChunks.finishStep(),
+        UIChunks.finish({ finishReason: `stop` }),
       ];
       const stream = createStream(chunks);
       await context.startStream(stream);
@@ -907,9 +896,9 @@ describe(`createResumableUIMessageStream`, () => {
 
       const streamId = `test-stream`;
       const chunks: Array<UIMessageChunk> = [
-        { type: `start` },
-        { type: `text-delta`, id: `1`, delta: `Hello` },
-        { type: `finish`, finishReason: `stop` },
+        UIChunks.start(),
+        UIChunks.textDelta({ id: `1`, delta: `Hello` }),
+        UIChunks.finish({ finishReason: `stop` }),
       ];
       const stream = createStream(chunks);
       const { promise, resolve } = Promise.withResolvers<void>();
@@ -960,8 +949,8 @@ describe(`createResumableUIMessageStream`, () => {
 
       const streamId = `test-stream`;
       const chunks: Array<UIMessageChunk> = [
-        { type: `start` },
-        { type: `finish`, finishReason: `stop` },
+        UIChunks.start(),
+        UIChunks.finish({ finishReason: `stop` }),
       ];
       const stream = createStream(chunks);
       const { promise, resolve } = Promise.withResolvers<void>();
@@ -1005,8 +994,8 @@ describe(`createResumableUIMessageStream`, () => {
 
       const streamId = `test-stream`;
       const chunks: Array<UIMessageChunk> = [
-        { type: `start` },
-        { type: `finish`, finishReason: `stop` },
+        UIChunks.start(),
+        UIChunks.finish({ finishReason: `stop` }),
       ];
       const stream = createStream(chunks);
       const { promise, reject } = Promise.withResolvers<void>();
@@ -1091,8 +1080,8 @@ describe(`createResumableUIMessageStream`, () => {
 
       const streamId = `test-stream`;
       const chunks: Array<UIMessageChunk> = [
-        { type: `start` },
-        { type: `finish`, finishReason: `stop` },
+        UIChunks.start(),
+        UIChunks.finish({ finishReason: `stop` }),
       ];
       const stream = createStream(chunks);
       const { promise, resolve } = Promise.withResolvers<void>();
@@ -1123,24 +1112,8 @@ describe(`createResumableUIMessageStream`, () => {
 
   describe(`streamText`, () => {
     const modelChunks: Array<LanguageModelV3StreamPart> = [
-      { type: `text-start`, id: `1` },
-      { type: `text-delta`, id: `1`, delta: `Hello` },
-      { type: `text-delta`, id: `1`, delta: ` ` },
-      { type: `text-delta`, id: `1`, delta: `World` },
-      { type: `text-end`, id: `1` },
-      {
-        type: `finish`,
-        finishReason: { raw: `stop`, unified: `stop` },
-        usage: {
-          inputTokens: {
-            total: 10,
-            noCache: undefined,
-            cacheRead: undefined,
-            cacheWrite: undefined,
-          },
-          outputTokens: { total: 5, text: undefined, reasoning: undefined },
-        },
-      },
+      ...StreamParts.text(`Hello World`, { id: `1` }),
+      StreamParts.finish({ finishReason: `stop` }),
     ];
 
     test(`should resume an active stream from another client`, async () => {
@@ -1261,8 +1234,7 @@ describe(`createResumableUIMessageStream`, () => {
       const originalStream = await startPromise;
       const originalChunks = await convertAsyncIterableToArray(originalStream);
 
-      // Stream was aborted early, so fewer chunks than full output
-      // Full stream: start + start-step + text-start + 3 text-deltas + text-end + finish-step + finish = 9+ chunks
+      // Stream was aborted early, so fewer chunks than the full output
       expect(originalChunks.length).toBeLessThan(9);
 
       // Last chunk should be abort chunk
