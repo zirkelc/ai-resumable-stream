@@ -1,7 +1,8 @@
 import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
 import type { UIMessageChunk } from "ai";
 import { streamText } from "ai";
-import { MockLanguageModel, Stream, StreamParts } from "ai-test-kit/language";
+import { Streams } from "ai-test-kit";
+import { MockLanguageModel, StreamParts } from "ai-test-kit/language";
 import { UIChunks } from "ai-test-kit/ui";
 import { consumeUIMessageStream } from "ai-stream-utils";
 import { convertAsyncIterableToArray } from "ai-stream-utils/utils";
@@ -35,7 +36,7 @@ function sleep(ms: number): Promise<void> {
  * Create a stream from chunks with optional delay
  */
 function createStream<CHUNK>(chunks: Array<CHUNK>, delayMs = 0): ReadableStream<CHUNK> {
-  return Stream.simulate(chunks, {
+  return Streams.simulate(chunks, {
     initialDelayInMs: delayMs,
     chunkDelayInMs: delayMs,
   });
@@ -245,7 +246,7 @@ describe(`createResumableUIMessageStream`, () => {
      * expected when exercising failure scenarios.
      */
     const rejectionHandler = (reason: Error) => {
-      const expectedErrors = [`Stream error`, `The client is closed`];
+      const expectedErrors = [`Streams error`, `The client is closed`];
       if (expectedErrors.includes(reason?.message)) {
         return; // Suppress
       }
@@ -329,7 +330,7 @@ describe(`createResumableUIMessageStream`, () => {
       const streamId = `test-stream`;
       const errorStream = new ReadableStream({
         pull(controller) {
-          controller.error(new Error(`Stream error`));
+          controller.error(new Error(`Streams error`));
         },
       });
 
@@ -552,7 +553,7 @@ describe(`createResumableUIMessageStream`, () => {
       test(`should call onFlush when source stream errors`, async () => {
         // Arrange
         const rejectionHandler = (reason: Error) => {
-          if (reason?.message === `Stream error`) return;
+          if (reason?.message === `Streams error`) return;
           throw reason;
         };
         process.on(`unhandledRejection`, rejectionHandler);
@@ -565,7 +566,7 @@ describe(`createResumableUIMessageStream`, () => {
         const streamId = `test-stream`;
         const errorStream = new ReadableStream({
           pull(controller) {
-            controller.error(new Error(`Stream error`));
+            controller.error(new Error(`Streams error`));
           },
         });
         let flushResolve: () => void;
@@ -1031,7 +1032,7 @@ describe(`createResumableUIMessageStream`, () => {
     test(`should not await keepAlive promise when source stream errors`, async () => {
       // Arrange
       const rejectionHandler = (reason: Error) => {
-        if (reason?.message === `Stream error`) return;
+        if (reason?.message === `Streams error`) return;
         throw reason;
       };
       process.on(`unhandledRejection`, rejectionHandler);
@@ -1044,7 +1045,7 @@ describe(`createResumableUIMessageStream`, () => {
       const streamId = `test-stream`;
       const errorStream = new ReadableStream({
         pull(controller) {
-          controller.error(new Error(`Stream error`));
+          controller.error(new Error(`Streams error`));
         },
       });
       const { promise } = Promise.withResolvers<void>();
@@ -1234,7 +1235,7 @@ describe(`createResumableUIMessageStream`, () => {
       const originalStream = await startPromise;
       const originalChunks = await convertAsyncIterableToArray(originalStream);
 
-      // Stream was aborted early, so fewer chunks than the full output
+      // Streams was aborted early, so fewer chunks than the full output
       expect(originalChunks.length).toBeLessThan(9);
 
       // Last chunk should be abort chunk

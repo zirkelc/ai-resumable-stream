@@ -1,3 +1,7 @@
 allowBuilds:
   esbuild: true
   redis-memory-server: true
+
+# ai-test-kit is a first-party package; exempt it from the global minimumReleaseAge gate
+minimumReleaseAgeExclude:
+  - ai-test-kit
