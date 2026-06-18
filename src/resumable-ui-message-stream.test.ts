@@ -59,7 +59,7 @@ function createMockModel(options: {
    * So drive `doStream` with a function response that returns this bespoke stream.
    */
   return MockLanguageModel.from({
-    stream: async () => ({
+    doStream: async () => ({
       stream: new ReadableStream({
         async pull(controller) {
           if (abortSignal?.aborted) {
