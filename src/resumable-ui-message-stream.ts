@@ -1,12 +1,17 @@
 import { JsonToSseTransformStream, type UIMessageChunk } from "ai";
 import { type AsyncIterableStream, createAsyncIterableStream } from "ai-stream-utils";
-import type { createClient } from "redis";
-import { createResumableStreamContext } from "resumable-stream";
+import { createResumableStreamContext, type Publisher, type Subscriber } from "resumable-stream";
 import { convertSSEToUIMessageStream } from "./convert-sse-stream-to-ui-message-stream.js";
 
 const KEY_PREFIX = `ai-resumable-stream`;
 
-type Redis = ReturnType<typeof createClient>;
+/**
+ * A Redis client, described by the commands this library actually calls rather than
+ * by the client type of a specific `redis` release. The generic parameters of
+ * `RedisClientType` are not mutually assignable across redis v5 and v6, so a nominal
+ * type would pin consumers to one of them.
+ */
+type Redis = Publisher & Subscriber & { isOpen: boolean };
 
 type CreateResumableUIMessageStream = {
   /**

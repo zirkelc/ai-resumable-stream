@@ -63,10 +63,17 @@ sequenceDiagram
 
 ## Installation
 
-This library requires [Redis](https://github.com/redis/node-redis).
+This library requires [Redis](https://github.com/redis/node-redis). Both `redis` v5 and v6 are supported.
+
+> [!NOTE]
+> Version compatibility:
+>
+> - Use [`ai-resumable-stream@1.x`](https://github.com/zirkelc/ai-resumable-stream/tree/v1.x) for AI SDK v6
+> - Use [`ai-resumable-stream@2.x`](https://github.com/zirkelc/ai-resumable-stream/tree/v2.x) for AI SDK v7
 
 ```bash
-npm install ai-resumable-stream redis
+npm install ai-resumable-stream@1 redis # AI SDK v6
+npm install ai-resumable-stream@2 redis # AI SDK v7
 ```
 
 ## Usage
@@ -111,7 +118,7 @@ Start a new stream and persist chunks to Redis. Returns a client stream that can
 > That means you can use `return stream` or `yield* stream`.
 
 ```typescript
-import { streamText } from "ai";
+import { streamText, toUIMessageStream } from "ai";
 
 async function sendMessage() {
   // Optional: create AbortController to enable stopStream
@@ -133,7 +140,7 @@ async function sendMessage() {
   });
 
   // Start streaming - chunks are stored in Redis as they arrive
-  const stream = await context.startStream(result.toUIMessageStream());
+  const stream = await context.startStream(toUIMessageStream({ stream: result.stream }));
 
   // Return stream to client
   return stream;
@@ -196,7 +203,7 @@ Server-side tRPC procedures for sending, resuming, and stopping streams:
 ```typescript
 // server/router.ts
 import { z } from "zod";
-import { streamText, type UIMessage, type UIMessageChunk } from "ai";
+import { streamText, toUIMessageStream, type UIMessage, type UIMessageChunk } from "ai";
 import { createClient } from "redis";
 import { createResumableUIMessageStream } from "ai-resumable-stream";
 import { publicProcedure, router } from "./trpc";
@@ -227,13 +234,13 @@ export const appRouter = router({
         model: openai("gpt-4o"),
         messages: [message],
         abortSignal: abortController.signal,
-        onFinish: async () => {
+        onEnd: async () => {
           // TODO: Clear the active stream when finished
           await saveChat({ chatId, activeStreamId: null });
         },
       });
 
-      const stream = await context.startStream(result.toUIMessageStream());
+      const stream = await context.startStream(toUIMessageStream({ stream: result.stream }));
 
       yield* stream;
     }),
@@ -311,7 +318,7 @@ Pass a `keepAlive` promise to `startStream` and resolve it at the end of your fu
 ```typescript
 const { promise, resolve } = Promise.withResolvers<void>();
 
-const stream = await context.startStream(result.toUIMessageStream(), {
+const stream = await context.startStream(toUIMessageStream({ stream: result.stream }), {
   keepAlive: promise,
 });
 
@@ -329,7 +336,7 @@ resolve();
 The `onFlush` callback is invoked after the source stream has ended and the Redis stream was closed. Use it for cleanup tasks like removing the active stream ID from the database. Errors thrown by `onFlush` are silently caught.
 
 ```typescript
-const stream = await context.startStream(result.toUIMessageStream(), {
+const stream = await context.startStream(toUIMessageStream({ stream: result.stream }), {
   onFlush: async () => {
     await saveChat({ chatId, activeStreamId: null });
   },

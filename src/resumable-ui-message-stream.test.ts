@@ -1,17 +1,17 @@
-import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
+import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import type { UIMessageChunk } from "ai";
-import { streamText } from "ai";
+import { streamText, toUIMessageStream } from "ai";
 import { Streams } from "ai-test-kit";
-import { MockLanguageModel, StreamParts } from "ai-test-kit/language";
+import { Language, MockLanguageModel } from "ai-test-kit/language";
 import { UIChunks } from "ai-test-kit/ui";
 import { consumeUIMessageStream } from "ai-stream-utils";
 import { convertAsyncIterableToArray } from "ai-stream-utils/utils";
-import { createClient } from "redis";
+import { createClient, type RedisClientType } from "redis";
 import { RedisMemoryServer } from "redis-memory-server";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { createResumableUIMessageStream } from "./resumable-ui-message-stream.js";
 
-type Redis = ReturnType<typeof createClient>;
+type Redis = RedisClientType;
 
 let redisServer: RedisMemoryServer;
 let redisUrl: string;
@@ -46,7 +46,7 @@ function createStream<CHUNK>(chunks: Array<CHUNK>, delayMs = 0): ReadableStream<
  * Create a mock model with optional delay and abort signal support
  */
 function createMockModel(options: {
-  chunks: Array<LanguageModelV3StreamPart>;
+  chunks: Array<LanguageModelV4StreamPart>;
   delay?: number;
   abortSignal?: AbortSignal;
 }) {
@@ -74,8 +74,9 @@ function createMockModel(options: {
             return;
           }
 
-          if (pullCount < chunks.length) {
-            controller.enqueue(chunks[pullCount]);
+          const chunk = chunks[pullCount];
+          if (chunk) {
+            controller.enqueue(chunk);
             pullCount++;
           } else {
             controller.close();
@@ -1112,9 +1113,9 @@ describe(`createResumableUIMessageStream`, () => {
   });
 
   describe(`streamText`, () => {
-    const modelChunks: Array<LanguageModelV3StreamPart> = [
-      ...StreamParts.text(`Hello World`, { id: `1` }),
-      StreamParts.finish({ finishReason: `stop` }),
+    const modelChunks: Array<LanguageModelV4StreamPart> = [
+      ...Language.streamText(`Hello World`, { id: `1` }),
+      Language.streamFinish({ finishReason: `stop` }),
     ];
 
     test(`should resume an active stream from another client`, async () => {
@@ -1141,7 +1142,7 @@ describe(`createResumableUIMessageStream`, () => {
 
         const model = createMockModel({ chunks: modelChunks, delay: 25 });
         const result = streamText({ model, prompt: `Generate text` });
-        const uiStream = result.toUIMessageStream();
+        const uiStream = toUIMessageStream({ stream: result.stream });
         return context.startStream(uiStream);
       })();
 
@@ -1209,7 +1210,7 @@ describe(`createResumableUIMessageStream`, () => {
             isAborted = true;
           },
         });
-        const uiStream = result.toUIMessageStream();
+        const uiStream = toUIMessageStream({ stream: result.stream });
         return context.startStream(uiStream);
       })();
 
@@ -1268,7 +1269,7 @@ describe(`createResumableUIMessageStream`, () => {
 
         const model = createMockModel({ chunks: modelChunks, delay: 25 });
         const result = streamText({ model, prompt: `Generate text` });
-        const uiStream = result.toUIMessageStream();
+        const uiStream = toUIMessageStream({ stream: result.stream });
         return context.startStream(uiStream);
       })();
 

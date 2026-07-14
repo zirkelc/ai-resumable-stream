@@ -29,6 +29,7 @@
     "prepublishOnly": "pnpm build",
     "build": "tsdown",
     "test": "vitest",
+    "typecheck": "tsc --noEmit",
     "lint": "oxlint --fix",
     "lint:ci": "oxlint",
     "format": "oxfmt --write",
@@ -36,35 +37,37 @@
     "prepare": "husky"
   },
   "dependencies": {
-    "ai-stream-utils": "^2.0.0",
-    "resumable-stream": "^2.2.10"
+    "ai-stream-utils": "^3.1.1",
+    "resumable-stream": "^2.2.12"
   },
   "devDependencies": {
-    "@ai-sdk/provider": "^3.0.8",
-    "@arethetypeswrong/cli": "^0.18.2",
+    "@ai-sdk/provider": "^4.0.3",
+    "@arethetypeswrong/cli": "^0.18.5",
     "@total-typescript/tsconfig": "^1.0.4",
-    "@types/node": "^25.2.3",
-    "@vitest/coverage-v8": "^4.0.18",
-    "ai": "^6.0.79",
-    "ai-test-kit": "^1.4.0",
+    "@types/node": "^26.1.1",
+    "@vitest/coverage-v8": "^4.1.10",
+    "ai": "^7.0.22",
+    "ai-test-kit": "^3.0.1",
     "husky": "^9.1.7",
-    "lint-staged": "^16.2.7",
+    "lint-staged": "^17.0.8",
     "mitata": "^1.0.34",
-    "oxfmt": "^0.31.0",
-    "oxlint": "^1.46.0",
-    "pkg-pr-new": "^0.0.63",
-    "publint": "^0.3.17",
-    "redis": "^5.10.0",
-    "redis-memory-server": "^0.16.0",
-    "tsdown": "^0.20.3",
-    "tsx": "^4.21.0",
-    "typescript": "^5.9.3",
-    "vitest": "^4.0.18",
-    "zod": "^4.3.6"
+    "oxfmt": "^0.58.0",
+    "oxlint": "^1.73.0",
+    "pkg-pr-new": "^0.0.75",
+    "publint": "^0.3.21",
+    "redis": "^6.1.0",
+    "redis-memory-server": "^0.17.0",
+    "redis-v5": "npm:redis@^5.12.1",
+    "redis-v6": "npm:redis@^6.1.0",
+    "tsdown": "^0.22.7",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10",
+    "zod": "^4.4.3"
   },
   "peerDependencies": {
-    "ai": "^6.0.0",
-    "redis": "^5.0.0"
+    "ai": "^7.0.0",
+    "redis": "^5.0.0 || ^6.0.0"
   },
   "lint-staged": {
     "*.{js,ts,tsx,jsx}": [
