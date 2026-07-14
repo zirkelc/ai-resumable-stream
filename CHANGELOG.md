@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0](https://github.com/zirkelc/ai-resumable-stream/compare/v1.4.0...v2.0.0) (2026-07-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* requires AI SDK v7. Use ai-resumable-stream@1.x for AI SDK v6.
+
+### Features
+
+* support AI SDK v7 and redis v6 ([a90ea65](https://github.com/zirkelc/ai-resumable-stream/commit/a90ea65fa628506336a98e5928478efb3bb4584d))
+
 ## [1.4.0](https://github.com/zirkelc/ai-resumable-stream/compare/v1.3.0...v1.4.0) (2026-04-11)
 
 
