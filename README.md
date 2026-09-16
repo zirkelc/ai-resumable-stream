@@ -35,6 +35,12 @@ Optional peer dependencies, one per feature you use:
 | `@aws-sdk/client-s3` | `ai-resumable-stream/adapters/s3-express` |
 | `ai`                 | `ai-resumable-stream/ai-sdk`              |
 
+> [!NOTE]
+> Version compatibility:
+>
+> - Use [`ai-resumable-stream@1.x`](https://github.com/zirkelc/ai-resumable-stream/tree/v1.x) for AI SDK v6
+> - Use [`ai-resumable-stream@2.x`](https://github.com/zirkelc/ai-resumable-stream/tree/v2.x) and later for AI SDK v7
+
 ## Quick start
 
 Create one context and reuse it for every stream.
@@ -60,7 +66,9 @@ Then wire three routes.
 
 ```ts
 // POST /chat/:chatId
-const { stream } = await context.startStream(result.toUIMessageStream(), { streamId: chatId });
+const { stream } = await context.startStream(toUIMessageStream({ stream: result.stream }), {
+  streamId: chatId,
+});
 return stream;
 
 // GET /chat/:chatId/stream
@@ -81,7 +89,7 @@ Starts a stream and persists chunks as they are produced. Returns the stream for
 > The returned stream is both a `ReadableStream` and an async iterable, so `return stream` and `yield* stream` both work.
 
 ```ts
-import { streamText } from "ai";
+import { streamText, toUIMessageStream } from "ai";
 
 async function sendMessage(chatId: string, messages: UIMessage[]) {
   // Optional: lets `streamText` see the stop signal
@@ -93,7 +101,7 @@ async function sendMessage(chatId: string, messages: UIMessage[]) {
     abortSignal: abortController.signal,
   });
 
-  const { stream } = await context.startStream(result.toUIMessageStream(), {
+  const { stream } = await context.startStream(toUIMessageStream({ stream: result.stream }), {
     // Optional: generates a stream id if not supplied
     streamId: chatId,
     abortController,
@@ -124,7 +132,7 @@ async function resumeMessage(chatId: string) {
     return;
   }
 
-// Return resumed stream to client
+  // Return resumed stream to client
   return stream;
 }
 ```
@@ -163,26 +171,29 @@ Stopping is always possible, because a controller is always available. This work
 
 ```ts
 // Without an abortController: stopping cancels the source, which propagates upstream
-await streams.startStream(result.toUIMessageStream(), { streamId });
+await streams.startStream(toUIMessageStream({ stream: result.stream }), { streamId });
 
 // With abortController: `streamText` sees the signal
 const abortController = new AbortController();
 const result = streamText({ model, messages, abortSignal: abortController.signal });
-await streams.startStream(result.toUIMessageStream(), { streamId, abortController });
+await streams.startStream(toUIMessageStream({ stream: result.stream }), {
+  streamId,
+  abortController,
+});
 ```
 
 It's recommended to always pass your own `abortController`. Handing the signal to `streamText` aborts the provider request directly and lets the AI SDK emit its `abort` chunk and run `onAbort`, instead of relying on cancellation travelling back up the pipe.
 
 ## Adapters
 
-| Import                                    | Store                                                                       | 
-| ----------------------------------------- | --------------------------------------------------------------------------- | 
-| `ai-resumable-stream/adapters/redis`      | Redis, via [`resumable-stream`](https://github.com/vercel/resumable-stream) | 
-| `ai-resumable-stream/adapters/s3-express` | One appendable object per stream, in an S3 Express One Zone bucket          | 
+| Import                                    | Store                                                                       |
+| ----------------------------------------- | --------------------------------------------------------------------------- |
+| `ai-resumable-stream/adapters/redis`      | Redis, via [`resumable-stream`](https://github.com/vercel/resumable-stream) |
+| `ai-resumable-stream/adapters/s3-express` | One appendable object per stream, in an S3 Express One Zone bucket          |
 
 ### Redis
 
-This adapter requires two Redis clients (pub/sub needs separate connections). The clients will be connected automatically, if not already connected, but the library won't disconnect them afterwards. That means you can manage the connection lifecycle in your application and reuse clients across multiple streams.
+This adapter requires two Redis clients (pub/sub needs separate connections). Both `redis` v5 and v6 are supported. The clients will be connected automatically, if not already connected, but the library won't disconnect them afterwards. That means you can manage the connection lifecycle in your application and reuse clients across multiple streams.
 
 ```ts
 import { createClient } from "redis";
@@ -268,16 +279,16 @@ const adapter = createS3ExpressAdapter({
 });
 ```
 
-| Option                 | Type       | Default               | Description                                                       |
-| ---------------------- | ---------- | --------------------- | ----------------------------------------------------------------- |
-| `client`               | `S3Client` |                       | Built and configured by you                                       |
-| `bucket`               | `string`   |                       | A directory bucket in an Availability Zone                        |
-| `prefix`               | `string`   | `ai-resumable-stream` | Namespaces every key. Point the lifecycle rule at it              |
-| `flushIntervalMs`      | `number`   | `250`                 | How long chunks may sit in memory before being written            |
-| `batchSize`            | `number`   | `50`                  | Forces a write once this many chunks are buffered                 |
-| `resumePollIntervalMs` | `number`   | `500`                 | How often a resuming reader looks for new bytes                   |
-| `stopPollIntervalMs`   | `number`   | `1000`                | How often a producer checks for a stop request                    |
-| `heartbeatMs`          | `number`   | `5000`                | How often an idle producer records that it is alive               |
+| Option                 | Type       | Default               | Description                                                                   |
+| ---------------------- | ---------- | --------------------- | ----------------------------------------------------------------------------- |
+| `client`               | `S3Client` |                       | Built and configured by you                                                   |
+| `bucket`               | `string`   |                       | A directory bucket in an Availability Zone                                    |
+| `prefix`               | `string`   | `ai-resumable-stream` | Namespaces every key. Point the lifecycle rule at it                          |
+| `flushIntervalMs`      | `number`   | `250`                 | How long chunks may sit in memory before being written                        |
+| `batchSize`            | `number`   | `50`                  | Forces a write once this many chunks are buffered                             |
+| `resumePollIntervalMs` | `number`   | `500`                 | How often a resuming reader looks for new bytes                               |
+| `stopPollIntervalMs`   | `number`   | `1000`                | How often a producer checks for a stop request                                |
+| `heartbeatMs`          | `number`   | `5000`                | How often an idle producer records that it is alive                           |
 | `deadAfterMs`          | `number`   | `30000`               | Silence after which a producer is presumed dead. At least twice `heartbeatMs` |
 
 #### How it works
@@ -457,7 +468,7 @@ Server-side procedures for sending, resuming, and stopping. The chat id is the s
 ```ts
 // server/router.ts
 import { z } from "zod";
-import { streamText, type UIMessage, type UIMessageChunk } from "ai";
+import { streamText, toUIMessageStream, type UIMessage, type UIMessageChunk } from "ai";
 import { createClient } from "redis";
 import { createResumableUIMessageStream } from "ai-resumable-stream/ai-sdk";
 import { createRedisAdapter } from "ai-resumable-stream/adapters/redis";
@@ -484,7 +495,7 @@ export const appRouter = router({
         abortSignal: abortController.signal,
       });
 
-      const { stream } = await streams.startStream(result.toUIMessageStream(), {
+      const { stream } = await streams.startStream(toUIMessageStream({ stream: result.stream }), {
         streamId: chatId,
         abortController,
         onFinish: async () => {

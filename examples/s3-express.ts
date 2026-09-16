@@ -20,7 +20,7 @@
  *     });
  */
 import { streamText, type UIMessageChunk } from "ai";
-import { MockLanguageModel, StreamParts } from "ai-test-kit/language";
+import { Language, MockLanguageModel } from "ai-test-kit/language";
 import { createFakeS3 } from "../src/__tests__/fake-s3.js";
 import { createStreamAdapter } from "../src/adapters/s3-express/adapter.js";
 import { createResumableUIMessageStream } from "../src/ai-sdk/index.js";
@@ -29,8 +29,8 @@ import { createResumableUIMessageStream } from "../src/ai-sdk/index.js";
 const model = MockLanguageModel.from({
   doStream: {
     chunks: [
-      ...StreamParts.text(`Hello there, how can I help?`, { separator: ` ` }),
-      StreamParts.finish(),
+      ...Language.streamText(`Hello there, how can I help?`, { separator: ` ` }),
+      Language.streamFinish(),
     ],
     chunkDelayInMs: 120,
   },

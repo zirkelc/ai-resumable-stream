@@ -30,6 +30,10 @@ jobs:
         run: pnpm install
       - name: Lint
         run: pnpm lint:ci
+      # Type-checks the tests too, which is what enforces the redis v5/v6 client
+      # conformance assertions. The build only emits declarations for the entrypoint.
+      - name: Typecheck
+        run: pnpm typecheck
 
   test:
     name: Test

@@ -12,7 +12,11 @@ import { createFakeS3 } from "./fake-s3.js";
 /** Redis */
 let redisServer: RedisMemoryServer | undefined;
 let redisUrl: string;
-const redisClients: Array<ReturnType<typeof createClient>> = [];
+/**
+ * Only what teardown needs, since the client type of one `redis` release does not
+ * describe the other.
+ */
+const redisClients: Array<{ isOpen: boolean; destroy: () => void }> = [];
 
 const redisHarness: Harness = {
   name: `redis`,

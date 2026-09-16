@@ -8,7 +8,7 @@
  * the two clients and the model are your own, and nothing else changes.
  */
 import { streamText, type UIMessageChunk } from "ai";
-import { MockLanguageModel, StreamParts } from "ai-test-kit/language";
+import { Language, MockLanguageModel } from "ai-test-kit/language";
 import { createClient } from "redis";
 import { RedisMemoryServer } from "redis-memory-server";
 import { createRedisAdapter } from "../src/adapters/redis/index.js";
@@ -18,8 +18,8 @@ import { createResumableUIMessageStream } from "../src/ai-sdk/index.js";
 const model = MockLanguageModel.from({
   doStream: {
     chunks: [
-      ...StreamParts.text(`Hello there, how can I help?`, { separator: ` ` }),
-      StreamParts.finish(),
+      ...Language.streamText(`Hello there, how can I help?`, { separator: ` ` }),
+      Language.streamFinish(),
     ],
     chunkDelayInMs: 120,
   },

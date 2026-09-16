@@ -1,9 +1,27 @@
-import type { createClient } from "redis";
-import { createResumableStreamContext } from "resumable-stream";
+import { createResumableStreamContext, type Publisher, type Subscriber } from "resumable-stream";
 import type { StreamAdapter } from "../../adapter.js";
 import { chunksToSSE, sseToChunks } from "./sse.js";
 
-type Redis = ReturnType<typeof createClient>;
+/**
+ * A Redis client, described by the commands this adapter actually calls rather than by
+ * the client type of a specific `redis` release. The generic parameters of
+ * `RedisClientType` are not mutually assignable across redis v5 and v6, so a nominal
+ * type would pin consumers to one of them.
+ *
+ * `get` and `set` are redeclared because the pointer is a string with an expiry, which
+ * is narrower than what `resumable-stream` describes for its own use.
+ */
+type Redis = Omit<Publisher, `get` | `set`> &
+  Subscriber & {
+    isOpen: boolean;
+    get(key: string): Promise<string | null>;
+    set(
+      key: string,
+      value: string,
+      options?: { expiration?: { type: `EX`; value: number } },
+    ): Promise<unknown>;
+    del(key: string): Promise<unknown>;
+  };
 
 export type CreateRedisAdapterOptions = {
   /**

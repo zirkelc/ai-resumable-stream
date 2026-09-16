@@ -11,6 +11,7 @@ on:
 
 permissions:
   id-token: write # needed for npm publish with provenance
+  contents: write # needed to force-push the floating major version tag
 
 jobs:
   release:
@@ -30,3 +31,17 @@ jobs:
       - run: pnpm install
       - run: pnpm build
       - run: pnpm publish --provenance --no-git-checks
+      # Move the floating major tag (e.g. v2.x) onto this release commit so
+      # version-pinned links like /tree/v2.x always resolve to the newest
+      # release in that major line. Pushed with the default GITHUB_TOKEN, whose
+      # pushes do not re-trigger workflows (no CI loop). Gated to skip prereleases
+      # (so an -rc/-next never yanks the stable vX.x tag) and workflow_dispatch
+      # (no release payload -> empty TAG -> would create a broken ".x" tag).
+      - name: Update major version tag
+        if: ${{ github.event_name == 'release' && !github.event.release.prerelease }}
+        env:
+          TAG: ${{ github.event.release.tag_name }} # e.g. v2.1.0
+        run: |
+          major="${TAG%%.*}"               # v2.1.0 -> v2
+          git tag -f "${major}.x"          # tag the checked-out release commit -> v2.x
+          git push -f origin "${major}.x"
