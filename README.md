@@ -2,14 +2,14 @@
 
 # ai-resumable-stream
 
-<p align="center">Resume and stop AI SDK streams, backed by S3, Redis, or any store you provide</p>
+<p align="center">AI SDK: Resume and stop UI message streams</p>
 <p align="center">
   <a href="https://www.npmjs.com/package/ai-resumable-stream" alt="ai-resumable-stream"><img src="https://img.shields.io/npm/dt/ai-resumable-stream?label=ai-resumable-stream"></a> <a href="https://github.com/zirkelc/ai-resumable-stream/actions/workflows/ci.yml" alt="CI"><img src="https://img.shields.io/github/actions/workflow/status/zirkelc/ai-resumable-stream/ci.yml?branch=main"></a>
 </p>
 
 </div>
 
-Resumable and stoppable streams for [`streamText()`](https://ai-sdk.dev/docs/reference/ai-sdk-core/stream-text). Chunks are persisted as they are produced, so a client that disconnects can pick the stream up again, and a stop request from any process reaches the one producing it.
+This library provides resumable streaming for UI message streams created by [`streamText()`](https://ai-sdk.dev/docs/reference/ai-sdk-core/stream-text) in the AI SDK. Chunks are persisted as they are produced, allowing clients to resume interrupted streams or stop active streams from anywhere.
 
 Where the chunks go is your choice. Two adapters ship; a third is four methods.
 
@@ -17,9 +17,9 @@ Where the chunks go is your choice. Two adapters ship; a third is four methods.
 
 Streams are ephemeral. Once data flows through, it is gone. That creates two hard problems.
 
-**Resume is hard.** The server does not track what it has sent. A client that disconnects (network drop, page reload, tab switch) loses everything that arrived while it was away, while the stream keeps running on the server.
+**Resume is hard** because the server does not track what it has sent. A client that disconnects (network drop, page reload, tab switch) loses everything that arrived while it was away, while the stream keeps running on the server. When reconnecting, there's no way to replay missed chunks without persisting them somewhere.
 
-**Stop is hard.** The request that says "stop" is not the request that started the stream. Without a coordination point, one cannot signal the other.
+**Stop is hard** because the client requesting "stop" is not the request that started the stream. The user clicks "Stop generating", which fires a new HTTP request, but the original stream is running in a different request/process. Without a central coordination point, you can't signal across requests.
 
 ## Install
 
@@ -40,10 +40,18 @@ Optional peer dependencies, one per feature you use:
 Create one context and reuse it for every stream.
 
 ```ts
-import { createResumableUIMessageStream } from "ai-resumable-stream/ai-sdk";
+import { createClient } from "redis";
 import { createRedisAdapter } from "ai-resumable-stream/adapters/redis";
+import { createResumableUIMessageStream } from "ai-resumable-stream/ai-sdk";
 
-export const streams = createResumableUIMessageStream({
+const publisher = createClient({ url: process.env.REDIS_URL });
+const subscriber = createClient({ url: process.env.REDIS_URL });
+
+// Optional: connect clients immediately or let the library connect on demand
+await publisher.connect();
+await subscriber.connect();
+
+const context = createResumableUIMessageStream({
   adapter: createRedisAdapter({ publisher, subscriber }),
 });
 ```
@@ -51,27 +59,23 @@ export const streams = createResumableUIMessageStream({
 Then wire three routes.
 
 ```ts
-/** POST /chat */
-const { stream } = await streams.startStream(result.toUIMessageStream(), { streamId: chatId });
+// POST /chat/:chatId
+const { stream } = await context.startStream(result.toUIMessageStream(), { streamId: chatId });
 return stream;
 
-/** GET /chat/:chatId/stream */
-const stream = await streams.resumeStream(chatId);
+// GET /chat/:chatId/stream
+const stream = await context.resumeStream({ streamId: chatId });
 return stream ?? new Response(null, { status: 204 });
 
-/** POST /chat/:chatId/stop */
-await streams.stopStream(chatId);
+// POST /chat/:chatId/stop
+await context.stopStream({ streamId: chatId });
 ```
-
-That is the whole API.
 
 ## Usage
 
 ### `startStream`
 
 Starts a stream and persists chunks as they are produced. Returns the stream for the client that started it, plus the id it was registered under.
-
-One drain loop feeds both the client and the adapter. **Cancelling the client stream does not stop persistence**, so a disconnected client can still resume.
 
 > [!TIP]
 > The returned stream is both a `ReadableStream` and an async iterable, so `return stream` and `yield* stream` both work.
@@ -80,7 +84,7 @@ One drain loop feeds both the client and the adapter. **Cancelling the client st
 import { streamText } from "ai";
 
 async function sendMessage(chatId: string, messages: UIMessage[]) {
-  /** Optional, but preferred. Lets `streamText` see the stop signal. */
+  // Optional: lets `streamText` see the stop signal
   const abortController = new AbortController();
 
   const result = streamText({
@@ -89,14 +93,13 @@ async function sendMessage(chatId: string, messages: UIMessage[]) {
     abortSignal: abortController.signal,
   });
 
-  const { stream } = await streams.startStream(result.toUIMessageStream(), {
+  const { stream } = await context.startStream(result.toUIMessageStream(), {
+    // Optional: generates a stream id if not supplied
     streamId: chatId,
     abortController,
-    onFinish: async () => {
-      await saveAssistantMessage(chatId, await result.text);
-    },
   });
 
+  // Return stream to client
   return stream;
 }
 ```
@@ -109,81 +112,91 @@ async function sendMessage(chatId: string, messages: UIMessage[]) {
 
 ### `resumeStream`
 
-Replays every chunk produced so far, then follows the rest live. Returns `null` when there is nothing to resume.
+Resume an existing stream and replays every chunk produced so far, then follows the rest live. Returns `null` when there is nothing to resume.
 
 ```ts
 async function resumeMessage(chatId: string) {
-  const stream = await streams.resumeStream(chatId);
+  const stream = await context.resumeStream({ streamId: chatId });
 
-  /** Unknown, already finished, or its producer died. */
-  if (!stream) return null;
+  // If no stream exists, return early
+  if (!stream) {
+    console.log("No active stream to resume");
+    return;
+  }
 
+// Return resumed stream to client
   return stream;
 }
 ```
 
-`null` covers three cases, deliberately indistinguishable:
+The stream is `null` in three cases that are deliberately indistinguishable:
 
 - no stream was ever started under that id
-- the stream completed
+- the stream already completed
 - the producer died or was stopped part way through
 
-If your application needs to tell a truncated stream from a complete one, record that next to the message you persist in `onFinish`.
+If your application needs to tell a truncated stream from a complete one, record that next to the message you persist.
 
 ### `stopStream`
 
-Asks the producing process to stop, from anywhere. Resolves once the request is recorded, which may be before the producer has seen it.
+Stop an active stream.
 
 ```ts
 async function stopMessage(chatId: string) {
-  await streams.stopStream(chatId);
+  await streams.stopStream({ streamId: chatId });
 }
 ```
 
-## Stream ids
+## Stream IDs
 
-A stream is addressed by one `streamId` that you choose. There is no second pointer or key to maintain.
+A stream is addressed by one `streamId` that you choose, and that id is a pointer rather than the stream itself. Each call to `startStream` creates a generation, which is one run of that id, and repoints the id at it. `resumeStream({ streamId })` resolves the pointer and follows the generation it names, and `stopStream({ streamId })` reaches whichever producer holds the id at the time. There is no second key to store or clear.
 
-- **Pass the chat id** in most applications. It encodes "at most one active stream per chat", and a reconnecting client needs nothing else to call `resumeStream(chatId)`.
+The indirection is what makes an id safe to reuse. Starting a new stream under an id that is already in use repoints it, so a resume gets the new stream and none of the old one's chunks, and a producer that is still shutting down cannot tear down the generation that replaced it.
+
+- **Pass the chat id** in most applications. It encodes "at most one active stream per chat", and a reconnecting client needs nothing else to call `resumeStream({ streamId: chatId })`.
 - **Pass the assistant message id** when you need to address one specific stream.
-- **Reusing an id is safe.** Starting a new stream under an existing id discards the previous stream's chunks, and a producer still shutting down cannot corrupt or terminate the stream that replaced it.
 - **Omit it** and one is generated. `startStream` returns it.
 
 ## Stopping
 
-Stop is always wired. It needs no extra configuration.
+Stopping is always possible, because a controller is always available. This works even if you didn't pass an `abortController` directly to `startStream(..., { abortController })`, because one is created automatically if not supplied, ensuring that a stream is always stoppable.
 
 ```ts
-/** Without a controller. Stopping cancels the source, which propagates upstream. */
+// Without an abortController: stopping cancels the source, which propagates upstream
 await streams.startStream(result.toUIMessageStream(), { streamId });
 
-/** With one, so `streamText` sees the signal. Preferred. */
+// With abortController: `streamText` sees the signal
 const abortController = new AbortController();
 const result = streamText({ model, messages, abortSignal: abortController.signal });
 await streams.startStream(result.toUIMessageStream(), { streamId, abortController });
 ```
 
-Both stop the stream. Pass your own controller anyway: handing the signal to `streamText` aborts the provider request directly and lets the AI SDK emit its `abort` chunk and run `onAbort`, instead of relying on cancellation travelling back up the pipe.
+It's recommended to always pass your own `abortController`. Handing the signal to `streamText` aborts the provider request directly and lets the AI SDK emit its `abort` chunk and run `onAbort`, instead of relying on cancellation travelling back up the pipe.
 
 ## Adapters
 
-| Import                                    | Store                                                                       | Survives the producer |
-| ----------------------------------------- | --------------------------------------------------------------------------- | --------------------- |
-| `ai-resumable-stream/adapters/redis`      | Redis, via [`resumable-stream`](https://github.com/vercel/resumable-stream) | No                    |
-| `ai-resumable-stream/adapters/s3-express` | One appendable object per stream, in an S3 Express One Zone bucket          | Yes                   |
-
-**A finished stream keeps its chunks.** A reader that started while it was live may still be draining them, so wiping on completion would truncate its message.
+| Import                                    | Store                                                                       | 
+| ----------------------------------------- | --------------------------------------------------------------------------- | 
+| `ai-resumable-stream/adapters/redis`      | Redis, via [`resumable-stream`](https://github.com/vercel/resumable-stream) | 
+| `ai-resumable-stream/adapters/s3-express` | One appendable object per stream, in an S3 Express One Zone bucket          | 
 
 ### Redis
+
+This adapter requires two Redis clients (pub/sub needs separate connections). The clients will be connected automatically, if not already connected, but the library won't disconnect them afterwards. That means you can manage the connection lifecycle in your application and reuse clients across multiple streams.
 
 ```ts
 import { createClient } from "redis";
 import { createRedisAdapter } from "ai-resumable-stream/adapters/redis";
+import { createResumableUIMessageStream } from "ai-resumable-stream/ai-sdk";
 
 const publisher = createClient({ url: process.env.REDIS_URL });
 const subscriber = createClient({ url: process.env.REDIS_URL });
 
 const adapter = createRedisAdapter({ publisher, subscriber });
+
+const context = createResumableUIMessageStream({
+  adapter,
+});
 ```
 
 | Option       | Type          | Required | Description                                                         |
@@ -192,12 +205,16 @@ const adapter = createRedisAdapter({ publisher, subscriber });
 | `subscriber` | `RedisClient` | Yes      | Must be separate: a subscribed connection cannot issue commands     |
 | `keyPrefix`  | `string`      | No       | Namespaces every key and channel. Defaults to `ai-resumable-stream` |
 
-Both clients are connected on first use and never disconnected, so you keep the connection lifecycle and reuse them across streams.
+#### How it works
 
-Chunks live in the memory of the producing process and reach late subscribers over pub/sub. Nothing is retained in Redis itself, so there is no TTL to configure.
+This adapter is built on [`resumable-stream`](https://github.com/vercel/resumable-stream). Chunks are never stored in Redis itself. They live in the memory of the process that produces them and reach late subscribers over pub/sub, so Redis carries the signalling and a small pointer per stream, not the messages. There is no chunk retention to configure.
+
+Each stream id points at a generation, which is one run of that id. That pointer is the only key the adapter writes, and it carries a 24 hour expiry so a producer that dies without cleaning up leaves nothing behind for long. Starting a new stream under an id that is already in use moves the pointer to a fresh generation, so a producer that is still shutting down cannot tear down the stream that replaced it. The pointer is deleted as soon as the source ends, which is why a resume request arriving during teardown is told there is nothing to resume instead of racing it.
+
+Stop requests travel on a separate pub/sub channel. A producer subscribes to the channel for its stream id when the stream starts, and aborts its controller when a message arrives, no matter which process published it.
 
 > [!IMPORTANT]
-> **A stream is only resumable while its producer is alive.** If a stream must survive the process that started it, use the S3 Express adapter.
+> **A stream is only resumable while its producer is alive.**
 
 ```mermaid
 sequenceDiagram
@@ -237,7 +254,9 @@ sequenceDiagram
 
 ### S3 Express
 
-A bucket is the only dependency. No Redis, no database, nothing to run.
+This adapter requires an [S3 Express One Zone](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-one-zone.html) directory bucket and an `S3Client` that you build yourself, so credentials, region and retry behaviour stay with your application.
+
+Chunks are held in the bucket rather than in the memory of the process producing them. A resume is served by reading the object, so it does not depend on the producing process answering, and any instance with access to the bucket can serve it.
 
 ```ts
 import { S3Client } from "@aws-sdk/client-s3";
@@ -249,17 +268,25 @@ const adapter = createS3ExpressAdapter({
 });
 ```
 
-| Option               | Type       | Default               | Description                                            |
-| -------------------- | ---------- | --------------------- | ------------------------------------------------------ |
-| `client`             | `S3Client` |                       | Built and configured by you                            |
-| `bucket`             | `string`   |                       | A directory bucket in an Availability Zone             |
-| `prefix`             | `string`   | `ai-resumable-stream` | Namespaces every key. Point the lifecycle rule at it   |
-| `flushIntervalMs`    | `number`   | `250`                 | How long chunks may sit in memory before being written |
-| `batchSize`          | `number`   | `50`                  | Forces a write once this many chunks are buffered      |
-| `pollIntervalMs`     | `number`   | `500`                 | How often a resuming reader looks for new bytes        |
-| `stopPollIntervalMs` | `number`   | `1000`                | How often a producer checks for a stop request         |
-| `heartbeatMs`        | `number`   | `5000`                | How often an idle producer records that it is alive    |
-| `deadAfterMs`        | `number`   | `30000`               | Silence after which a producer is presumed dead        |
+| Option                 | Type       | Default               | Description                                                       |
+| ---------------------- | ---------- | --------------------- | ----------------------------------------------------------------- |
+| `client`               | `S3Client` |                       | Built and configured by you                                       |
+| `bucket`               | `string`   |                       | A directory bucket in an Availability Zone                        |
+| `prefix`               | `string`   | `ai-resumable-stream` | Namespaces every key. Point the lifecycle rule at it              |
+| `flushIntervalMs`      | `number`   | `250`                 | How long chunks may sit in memory before being written            |
+| `batchSize`            | `number`   | `50`                  | Forces a write once this many chunks are buffered                 |
+| `resumePollIntervalMs` | `number`   | `500`                 | How often a resuming reader looks for new bytes                   |
+| `stopPollIntervalMs`   | `number`   | `1000`                | How often a producer checks for a stop request                    |
+| `heartbeatMs`          | `number`   | `5000`                | How often an idle producer records that it is alive               |
+| `deadAfterMs`          | `number`   | `30000`               | Silence after which a producer is presumed dead. At least twice `heartbeatMs` |
+
+#### How it works
+
+A stream is one object in the bucket, appended to as chunks are produced. Chunks are buffered in memory and written once `batchSize` of them have collected or `flushIntervalMs` has passed, whichever comes first, so a stream costs one request per flush rather than one per chunk.
+
+Each stream id points at a generation, which is one run of that id, and the pointer is a small object next to the log. Every key the adapter writes sits under the generation, the stop marker included. A producer that has been superseded therefore cannot append into the log of the stream that replaced it, and a stop request cannot reach a generation other than the one it was resolved against.
+
+Stop requests are an object too. `stopStream` writes a marker under the current generation, and the producer checks for it every `stopPollIntervalMs` and aborts its controller when it appears.
 
 > [!IMPORTANT]
 > The bucket must be an [S3 Express One Zone](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-one-zone.html) directory bucket in an Availability Zone. Appends exist nowhere else in S3, and they are what make a stream one object rather than one object per batch.
@@ -303,7 +330,7 @@ sequenceDiagram
         Server->>S3: GetObject Range bytes=0-
         S3-->>Server: the whole backlog, one request
         Server-->>Client: past chunks
-        loop every pollIntervalMs
+        loop every resumePollIntervalMs
             Server->>S3: GetObject Range bytes=N-
             S3-->>Server: new records, or 416 for none
             Server-->>Client: live chunks
@@ -320,16 +347,14 @@ sequenceDiagram
     end
 ```
 
-**Cost.** Writes are what you pay for. Every flush is one billed `PutObject`, so `flushIntervalMs` is the dial: doubling it roughly halves what a stream costs and adds that much to how far a resuming reader lags. Reads are close to free. Put the producer in the bucket's Availability Zone, since AWS is explicit that reaching a directory bucket from another one is slower.
+Every flush is one billed `PutObject`, and that is where the cost of a stream sits. Raising `flushIntervalMs` reduces the number of writes in proportion, and adds the same amount to how far behind a resuming reader runs. Reads are charged at a much lower rate. Run the producer in the same Availability Zone as the bucket, since AWS documents access from another zone as slower.
 
-**Liveness** is judged on S3's clock at both ends, never the caller's. An idle producer records that it is alive every `heartbeatMs`. A log unwritten for `deadAfterMs` has a dead producer, so `resumeStream` returns `null` and a reader already following it ends.
+A producer with nothing to write records a heartbeat every `heartbeatMs`, and both ends judge liveness on S3's clock rather than the caller's. A log that has not been written to for `deadAfterMs` is treated as having a dead producer, so `resumeStream` returns `null` and a reader already following it ends.
 
-**Cleanup is yours.** Nothing is deleted when a stream finishes. Give the bucket a [lifecycle expiration rule](https://docs.aws.amazon.com/AmazonS3/latest/userguide/directory-buckets-objects-lifecycle.html) covering `prefix`.
+Nothing is deleted when a stream finishes, because a reader may still be draining it. Set a [lifecycle expiration rule](https://docs.aws.amazon.com/AmazonS3/latest/userguide/directory-buckets-objects-lifecycle.html) on the bucket covering `prefix`.
 
 > [!WARNING]
 > Lifecycle on a directory bucket does nothing unless the bucket policy grants `s3express:CreateSession` with `ReadWrite` to `lifecycle.s3.amazonaws.com`. Without it, objects accumulate silently.
-
-**Versioning.** Each log declares a format version in its first bytes. A reader refuses a log written by a version of this package it does not understand, rather than misreading it. That matters during a rolling deploy, when two versions can meet the same stream.
 
 No local emulator implements appends, so the tests run against an in-memory bucket. To check that model against the real thing:
 
@@ -339,16 +364,16 @@ S3_EXPRESS_BUCKET=my-streams--use1-az4--x-s3 AWS_REGION=us-east-1 pnpm test inte
 
 ### Custom `StreamAdapter`
 
-To put streams anywhere else, implement four methods. Both adapters above are built this way.
+A `StreamAdapter` is four methods. Implement them against the store you want and pass the object as `adapter`.
 
 ```ts
 import type { StreamAdapter } from "ai-resumable-stream";
 
 const adapter: StreamAdapter = {
-  createStream(streamId, chunks, context) { ... },
-  resumeStream(streamId) { ... },
-  requestStop(streamId) { ... },
-  onStopRequested(streamId, onStop) { ... },
+  createStream({ streamId, chunks, waitUntil }) { ... },
+  resumeStream({ streamId }) { ... },
+  requestStop({ streamId }) { ... },
+  onStopRequested({ streamId, onStop }) { ... },
 };
 ```
 
@@ -359,9 +384,15 @@ const adapter: StreamAdapter = {
 | `requestStop`     | Safe to call for an unknown or finished stream                                                                                                                     |
 | `onStopRequested` | Producer-side listener. Returns a function that removes it                                                                                                         |
 
-Chunks are transported as opaque strings and their order must be preserved. Any framing needed to survive the transport is the adapter's own concern.
+`createStream` receives a `ReadableStream<string>` of encoded chunks. It has to consume that stream in the background until it ends, and `resumeStream` has to return the same strings in the same order, followed by the ones still to come. The strings are opaque, so any framing they need to survive your store is the adapter's own concern.
 
-## Chunk types
+`requestStop` and `onStopRequested` usually run in different processes, so the stop signal has to travel through the store as well, by a subscription, a poll, or whatever the backend offers.
+
+The tests in [`src/__tests__/conformance-suite.ts`](./src/__tests__/conformance-suite.ts) run against both shipped adapters and cover what an adapter has to get right: replay followed by live chunks on resume, persistence that continues after the client disconnects, a reused id that discards the previous stream's chunks, and a stop that reaches a reader who resumed.
+
+## Advanced
+
+### Chunk types
 
 The root export is generic over the chunk type and has no dependency on `ai`. The `ai-sdk` subpath binds it to the AI SDK:
 
@@ -388,7 +419,7 @@ const streams = createResumableStream({ adapter, codec });
 
 `decode` may return `undefined` to drop a chunk it cannot represent, so one bad chunk never fails an entire resume.
 
-## Serverless
+### Serverless
 
 Persistence outlives the response, so the runtime has to be told to wait for it:
 
@@ -396,6 +427,18 @@ Persistence outlives the response, so the runtime has to be told to wait for it:
 import { waitUntil } from "@vercel/functions";
 
 const streams = createResumableUIMessageStream({ adapter, waitUntil });
+```
+
+### Finish
+
+The `onFinish` callback is invoked after the source stream has ended and the adapter stream was closed. Use it for cleanup tasks like removing the active stream ID from the database. Errors thrown by `onFinish` are silently caught.
+
+```typescript
+const stream = await context.startStream(toUIMessageStream({ stream: result.stream }), {
+  onFinish: async () => {
+    await saveChat({ chatId, activeStreamId: null });
+  },
+});
 ```
 
 ## Examples
@@ -455,7 +498,7 @@ export const appRouter = router({
   resumeMessage: publicProcedure.input(z.object({ chatId: z.string() })).mutation(async function* ({
     input,
   }): AsyncGenerator<UIMessageChunk> {
-    const stream = await streams.resumeStream(input.chatId);
+    const stream = await streams.resumeStream({ streamId: input.chatId });
     if (!stream) return;
 
     yield* stream;
@@ -464,7 +507,7 @@ export const appRouter = router({
   stopMessage: publicProcedure
     .input(z.object({ chatId: z.string() }))
     .mutation(async ({ input }) => {
-      await streams.stopStream(input.chatId);
+      await streams.stopStream({ streamId: input.chatId });
 
       return { success: true };
     }),
@@ -481,8 +524,8 @@ function createResumableStream<CHUNK>(options: CreateResumableStreamOptions<CHUN
     source: ReadableStream<CHUNK>,
     options?: StartStreamOptions,
   ) => Promise<{ streamId: string; stream: AsyncIterableStream<CHUNK> }>;
-  resumeStream: (streamId: string) => Promise<AsyncIterableStream<CHUNK> | null>;
-  stopStream: (streamId: string) => Promise<void>;
+  resumeStream: (options: ResumeStreamOptions) => Promise<AsyncIterableStream<CHUNK> | null>;
+  stopStream: (options: StopStreamOptions) => Promise<void>;
 };
 
 type CreateResumableStreamOptions<CHUNK> = {
@@ -496,6 +539,14 @@ type StartStreamOptions = {
   streamId?: string;
   abortController?: AbortController;
   onFinish?: () => void | Promise<void>;
+};
+
+type ResumeStreamOptions = {
+  streamId: string;
+};
+
+type StopStreamOptions = {
+  streamId: string;
 };
 ```
 
@@ -520,18 +571,14 @@ function createResumableUIMessageStream(
 
 ```ts
 type StreamAdapter = {
-  createStream(
-    streamId: string,
-    chunks: ReadableStream<string>,
-    context: AdapterContext,
-  ): Promise<void>;
-  resumeStream(streamId: string): Promise<ReadableStream<string> | null>;
-  requestStop(streamId: string): Promise<void>;
-  onStopRequested(streamId: string, onStop: () => void): Promise<() => void>;
-};
-
-type AdapterContext = {
-  waitUntil?: (promise: Promise<unknown>) => void;
+  createStream(options: {
+    streamId: string;
+    chunks: ReadableStream<string>;
+    waitUntil?: (promise: Promise<unknown>) => void;
+  }): Promise<void>;
+  resumeStream(options: { streamId: string }): Promise<ReadableStream<string> | null>;
+  requestStop(options: { streamId: string }): Promise<void>;
+  onStopRequested(options: { streamId: string; onStop: () => void }): Promise<() => void>;
 };
 ```
 

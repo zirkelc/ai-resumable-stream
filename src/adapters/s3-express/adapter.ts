@@ -1,5 +1,5 @@
 import type { S3Client } from "@aws-sdk/client-s3";
-import type { AdapterContext, StreamAdapter } from "../../adapter.js";
+import type { StreamAdapter } from "../../adapter.js";
 import { createS3Operations, type S3Operations, WriteOffsetMismatchError } from "./client.js";
 import { delay } from "./delay.js";
 import {
@@ -35,7 +35,7 @@ export type S3ExpressAdapterOptions = {
   /**
    * How often a resuming reader looks for new bytes. Defaults to 500ms.
    */
-  pollIntervalMs?: number;
+  resumePollIntervalMs?: number;
   /**
    * How often a producer checks for a stop request. Defaults to 1s.
    */
@@ -81,7 +81,7 @@ type InternalOptions = S3ExpressAdapterOptions & {
 const DEFAULT_PREFIX = `ai-resumable-stream`;
 const DEFAULT_FLUSH_INTERVAL_MS = 250;
 const DEFAULT_BATCH_SIZE = 50;
-const DEFAULT_POLL_INTERVAL_MS = 500;
+const DEFAULT_RESUME_POLL_INTERVAL_MS = 500;
 const DEFAULT_STOP_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_HEARTBEAT_MS = 5_000;
 const DEFAULT_DEAD_AFTER_MS = 30_000;
@@ -164,7 +164,7 @@ export function createStreamAdapter(
     prefix = DEFAULT_PREFIX,
     flushIntervalMs = DEFAULT_FLUSH_INTERVAL_MS,
     batchSize = DEFAULT_BATCH_SIZE,
-    pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
+    resumePollIntervalMs = DEFAULT_RESUME_POLL_INTERVAL_MS,
     stopPollIntervalMs = DEFAULT_STOP_POLL_INTERVAL_MS,
     heartbeatMs = DEFAULT_HEARTBEAT_MS,
     deadAfterMs = DEFAULT_DEAD_AFTER_MS,
@@ -206,7 +206,7 @@ export function createStreamAdapter(
   });
 
   return {
-    async createStream(streamId, chunks, context: AdapterContext) {
+    async createStream({ streamId, chunks, waitUntil }) {
       const generationId = crypto.randomUUID();
       const pointer: Pointer = { generationId };
 
@@ -365,10 +365,10 @@ export function createStreamAdapter(
         }
       })();
 
-      context.waitUntil?.(consumed);
+      waitUntil?.(consumed);
     },
 
-    async resumeStream(streamId) {
+    async resumeStream({ streamId }) {
       const pointer = await readPointer(streamId);
       if (!pointer) return null;
 
@@ -463,7 +463,7 @@ export function createStreamAdapter(
               lastProgressAt = Date.now();
             }
 
-            await delay(pollIntervalMs, signal);
+            await delay(resumePollIntervalMs, signal);
           }
         },
 
@@ -473,14 +473,14 @@ export function createStreamAdapter(
       });
     },
 
-    async requestStop(streamId) {
+    async requestStop({ streamId }) {
       const pointer = await readPointer(streamId);
       if (!pointer) return;
 
       await s3.put(stopKey(streamId, pointer.generationId), STOP_MARKER);
     },
 
-    async onStopRequested(streamId, onStop) {
+    async onStopRequested({ streamId, onStop }) {
       return stopWatchers.watch(streamId, onStop);
     },
   };

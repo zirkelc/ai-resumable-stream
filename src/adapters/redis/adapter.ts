@@ -1,6 +1,6 @@
 import type { createClient } from "redis";
 import { createResumableStreamContext } from "resumable-stream";
-import type { AdapterContext, StreamAdapter } from "../../adapter.js";
+import type { StreamAdapter } from "../../adapter.js";
 import { chunksToSSE, sseToChunks } from "./sse.js";
 
 type Redis = ReturnType<typeof createClient>;
@@ -94,7 +94,7 @@ export function createRedisAdapter(options: CreateRedisAdapterOptions): StreamAd
   }
 
   return {
-    async createStream(streamId, chunks, context: AdapterContext) {
+    async createStream({ streamId, chunks, waitUntil }) {
       await connect();
 
       const generationId = `${streamId}:${crypto.randomUUID()}`;
@@ -117,10 +117,10 @@ export function createRedisAdapter(options: CreateRedisAdapterOptions): StreamAd
         }),
       );
 
-      await createContext(context.waitUntil).createNewResumableStream(generationId, () => sse);
+      await createContext(waitUntil).createNewResumableStream(generationId, () => sse);
     },
 
-    async resumeStream(streamId) {
+    async resumeStream({ streamId }) {
       await connect();
 
       const generationId = await readGenerationId(streamId);
@@ -170,12 +170,12 @@ export function createRedisAdapter(options: CreateRedisAdapterOptions): StreamAd
       });
     },
 
-    async requestStop(streamId) {
+    async requestStop({ streamId }) {
       await connect();
       await publisher.publish(stopChannel(streamId), `stop`);
     },
 
-    async onStopRequested(streamId, onStop) {
+    async onStopRequested({ streamId, onStop }) {
       await connect();
 
       const channel = stopChannel(streamId);

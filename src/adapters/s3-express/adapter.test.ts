@@ -13,7 +13,7 @@ const FAST = {
   prefix: `test`,
   flushIntervalMs: 0,
   batchSize: 1,
-  pollIntervalMs: 10,
+  resumePollIntervalMs: 10,
   stopPollIntervalMs: 10,
   heartbeatMs: 40,
   deadAfterMs: 100,
@@ -50,10 +50,10 @@ async function collect(stream: ReadableStream<string>): Promise<Array<string>> {
 /**
  * Collects the work an adapter defers, so a test can wait for a producer to finish.
  */
-function createContext() {
+function createWaitUntil() {
   const pending: Array<Promise<unknown>> = [];
   return {
-    context: { waitUntil: (promise: Promise<unknown>) => pending.push(promise) },
+    waitUntil: (promise: Promise<unknown>) => pending.push(promise),
     settled: () => Promise.all(pending),
   };
 }
@@ -112,15 +112,15 @@ describe(`s3-express adapter`, () => {
     const adapter = createStreamAdapter(s3, { ...FAST, maxPartsPerSegment: 3 });
     const produced = Array.from({ length: 10 }, (_, index) => `chunk-${index}`);
     const source = createControlledSource();
-    const { context, settled } = createContext();
+    const { waitUntil, settled } = createWaitUntil();
 
     // Act
-    await adapter.createStream(`rolling`, source.stream, context);
+    await adapter.createStream({ streamId: `rolling`, chunks: source.stream, waitUntil });
     for (const chunk of produced) source.push(chunk);
 
     const resumed = await vi.waitFor(
       async () => {
-        const candidate = await adapter.resumeStream(`rolling`);
+        const candidate = await adapter.resumeStream({ streamId: `rolling` });
         expect(candidate).not.toBeNull();
         return candidate!;
       },
@@ -152,15 +152,15 @@ describe(`s3-express adapter`, () => {
     const adapter = createStreamAdapter(lossy, FAST);
     const produced = [`one`, `two`, `three`];
     const source = createControlledSource();
-    const { context, settled } = createContext();
+    const { waitUntil, settled } = createWaitUntil();
 
     // Act
-    await adapter.createStream(`lossy`, source.stream, context);
+    await adapter.createStream({ streamId: `lossy`, chunks: source.stream, waitUntil });
     for (const chunk of produced) source.push(chunk);
 
     const resumed = await vi.waitFor(
       async () => {
-        const candidate = await adapter.resumeStream(`lossy`);
+        const candidate = await adapter.resumeStream({ streamId: `lossy` });
         expect(candidate).not.toBeNull();
         return candidate!;
       },
@@ -191,15 +191,15 @@ describe(`s3-express adapter`, () => {
     const adapter = createStreamAdapter(flaky, FAST);
     const produced = [`one`, `two`, `three`];
     const source = createControlledSource();
-    const { context, settled } = createContext();
+    const { waitUntil, settled } = createWaitUntil();
 
     // Act
-    await adapter.createStream(`flaky`, source.stream, context);
+    await adapter.createStream({ streamId: `flaky`, chunks: source.stream, waitUntil });
     for (const chunk of produced) source.push(chunk);
 
     const resumed = await vi.waitFor(
       async () => {
-        const candidate = await adapter.resumeStream(`flaky`);
+        const candidate = await adapter.resumeStream({ streamId: `flaky` });
         expect(candidate).not.toBeNull();
         return candidate!;
       },
@@ -220,15 +220,15 @@ describe(`s3-express adapter`, () => {
     const adapter = createStreamAdapter(s3, FAST);
     const first = createControlledSource();
     const second = createControlledSource();
-    const { context, settled } = createContext();
+    const { waitUntil, settled } = createWaitUntil();
 
-    await adapter.createStream(`reused`, first.stream, context);
+    await adapter.createStream({ streamId: `reused`, chunks: first.stream, waitUntil });
     first.push(`stale`);
     await vi.waitFor(() => expect(segmentKeys(s3, `reused`).length).toBe(1));
     const [staleSegment] = segmentKeys(s3, `reused`);
 
     // Act
-    await adapter.createStream(`reused`, second.stream, context);
+    await adapter.createStream({ streamId: `reused`, chunks: second.stream, waitUntil });
     second.push(`fresh`);
 
     /** The first producer shuts down well after the second one took the id. */
@@ -249,7 +249,7 @@ describe(`s3-express adapter`, () => {
     await writeAbandonedStream(s3, `abandoned`, [`only`]);
 
     // Act
-    const resumed = await adapter.resumeStream(`abandoned`);
+    const resumed = await adapter.resumeStream({ streamId: `abandoned` });
     const collected = await collect(resumed!);
 
     // Assert
@@ -264,7 +264,7 @@ describe(`s3-express adapter`, () => {
 
     // Act
     await sleep(FAST.deadAfterMs + 50);
-    const resumed = await adapter.resumeStream(`long-gone`);
+    const resumed = await adapter.resumeStream({ streamId: `long-gone` });
 
     // Assert
     expect(resumed).toBeNull();
@@ -278,7 +278,7 @@ describe(`s3-express adapter`, () => {
     const before = s3.counts().reads;
 
     // Act
-    const resumed = await adapter.resumeStream(`backlog`);
+    const resumed = await adapter.resumeStream({ streamId: `backlog` });
 
     // Assert
     /** The pointer, then every chunk written so far. */

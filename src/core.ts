@@ -26,6 +26,20 @@ export type StartStreamOptions = {
   onFinish?: () => void | Promise<void>;
 };
 
+export type ResumeStreamOptions = {
+  /**
+   * The id the stream was started under.
+   */
+  streamId: string;
+};
+
+export type StopStreamOptions = {
+  /**
+   * The id of the stream to stop.
+   */
+  streamId: string;
+};
+
 export type StartStreamResult<CHUNK> = {
   /**
    * The id the stream was registered under, whether supplied or generated.
@@ -82,7 +96,10 @@ export function createResumableStream<CHUNK>(options: CreateResumableStreamOptio
       onFinish,
     } = startOptions;
 
-    const unsubscribe = await adapter.onStopRequested(streamId, () => abortController.abort());
+    const unsubscribe = await adapter.onStopRequested({
+      streamId,
+      onStop: () => abortController.abort(),
+    });
 
     /**
      * Chunks for the client, exactly as produced. Cancelling stops the client fan-out
@@ -115,7 +132,7 @@ export function createResumableStream<CHUNK>(options: CreateResumableStreamOptio
     const reader = source.getReader();
 
     try {
-      await adapter.createStream(streamId, adapterStream, { waitUntil });
+      await adapter.createStream({ streamId, chunks: adapterStream, waitUntil });
     } catch (error) {
       reader.releaseLock();
       await ignoreErrors(unsubscribe);
@@ -168,8 +185,10 @@ export function createResumableStream<CHUNK>(options: CreateResumableStreamOptio
    * Returns the chunks of an in-flight stream, starting from the first one it produced,
    * or `null` when there is nothing to resume.
    */
-  async function resumeStream(streamId: string): Promise<AsyncIterableStream<CHUNK> | null> {
-    const encoded = await adapter.resumeStream(streamId);
+  async function resumeStream(
+    options: ResumeStreamOptions,
+  ): Promise<AsyncIterableStream<CHUNK> | null> {
+    const encoded = await adapter.resumeStream({ streamId: options.streamId });
     if (!encoded) return null;
 
     const chunks = encoded.pipeThrough(
@@ -188,8 +207,8 @@ export function createResumableStream<CHUNK>(options: CreateResumableStreamOptio
    * Asks the process producing the stream to stop. Resolves once the request is
    * recorded, which may be before the producer has observed it.
    */
-  async function stopStream(streamId: string): Promise<void> {
-    await adapter.requestStop(streamId);
+  async function stopStream(options: StopStreamOptions): Promise<void> {
+    await adapter.requestStop({ streamId: options.streamId });
   }
 
   return { startStream, resumeStream, stopStream };
