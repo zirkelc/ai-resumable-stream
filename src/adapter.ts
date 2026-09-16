@@ -1,15 +1,4 @@
 /**
- * Extra information a storage adapter may use when registering a stream.
- */
-export type AdapterContext = {
-  /**
-   * Keeps the host process alive until the promise settles.
-   * Relevant for serverless runtimes where work after the response is suspended.
-   */
-  waitUntil?: (promise: Promise<unknown>) => void;
-};
-
-/**
  * Storage and signalling backend for resumable streams.
  *
  * Chunks are transported as opaque strings and their order must be preserved. Any
@@ -23,28 +12,32 @@ export type StreamAdapter = {
    * Resolves once the stream is registered and resumable, not once it is complete.
    * A stream id may be reused, so implementations must not replay stale chunks.
    */
-  createStream(
-    streamId: string,
-    chunks: ReadableStream<string>,
-    context: AdapterContext,
-  ): Promise<void>;
+  createStream(options: {
+    streamId: string;
+    chunks: ReadableStream<string>;
+    /**
+     * Keeps the host process alive until the promise settles.
+     * Relevant for serverless runtimes where work after the response is suspended.
+     */
+    waitUntil?: (promise: Promise<unknown>) => void;
+  }): Promise<void>;
   /**
    * Returns the chunks of an in-flight stream: those already produced, followed by
    * those still to come, ending when the stream ends.
    *
    * Resolves `null` when the stream is unknown, already finished, or expired.
    */
-  resumeStream(streamId: string): Promise<ReadableStream<string> | null>;
+  resumeStream(options: { streamId: string }): Promise<ReadableStream<string> | null>;
   /**
    * Signals whichever process owns the stream to stop producing.
    * Safe to call for an unknown or finished stream.
    */
-  requestStop(streamId: string): Promise<void>;
+  requestStop(options: { streamId: string }): Promise<void>;
   /**
    * Registers a producer-side listener for stop requests. Returns a function that
    * removes the listener.
    */
-  onStopRequested(streamId: string, onStop: () => void): Promise<() => void>;
+  onStopRequested(options: { streamId: string; onStop: () => void }): Promise<() => void>;
 };
 
 /**

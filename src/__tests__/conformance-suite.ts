@@ -11,7 +11,7 @@ import { createResumableUIMessageStream } from "../ai-sdk/index.js";
 export const FAST_POLLING = {
   flushIntervalMs: 0,
   batchSize: 1,
-  pollIntervalMs: 10,
+  resumePollIntervalMs: 10,
   stopPollIntervalMs: 10,
 };
 
@@ -107,7 +107,7 @@ export function defineConformanceTests(harness: Harness) {
       source.push(produced[1]!);
       const resumed = await vi.waitFor(
         async () => {
-          const candidate = await context.resumeStream(`stream-2`);
+          const candidate = await context.resumeStream({ streamId: `stream-2` });
           expect(candidate).not.toBeNull();
           return candidate!;
         },
@@ -123,6 +123,46 @@ export function defineConformanceTests(harness: Harness) {
       expect(await collected).toEqual(produced);
     });
 
+    test(`should serve several resumers from one producer at the same time`, async () => {
+      // Arrange
+      const context = await createContext();
+      const produced = [
+        UIChunks.textStart({ id: `1` }),
+        UIChunks.textDelta({ id: `1`, delta: `he` }),
+        UIChunks.textDelta({ id: `1`, delta: `llo` }),
+      ];
+      const source = createControlledSource();
+      const { stream } = await context.startStream(source.stream, { streamId: `stream-10` });
+
+      // Act
+      source.push(produced[0]!);
+      source.push(produced[1]!);
+
+      /** Every reader attaches while the producer is still running. */
+      const resumed = await Promise.all(
+        Array.from({ length: 3 }, () =>
+          vi.waitFor(
+            async () => {
+              const candidate = await context.resumeStream({ streamId: `stream-10` });
+              expect(candidate).not.toBeNull();
+              return candidate!;
+            },
+            { timeout: 5_000 },
+          ),
+        ),
+      );
+
+      const collected = resumed.map(collect);
+      source.push(produced[2]!);
+      source.close();
+      await collect(stream);
+
+      // Assert
+      for (const chunks of collected) {
+        expect(await chunks).toEqual(produced);
+      }
+    });
+
     test(`should return null when resuming a finished stream`, async () => {
       // Arrange
       const context = await createContext();
@@ -135,7 +175,7 @@ export function defineConformanceTests(harness: Harness) {
       // Act
       const resumed = await vi.waitFor(
         async () => {
-          const candidate = await context.resumeStream(`stream-3`);
+          const candidate = await context.resumeStream({ streamId: `stream-3` });
           expect(candidate).toBeNull();
           return candidate;
         },
@@ -151,7 +191,7 @@ export function defineConformanceTests(harness: Harness) {
       const context = await createContext();
 
       // Act
-      const resumed = await context.resumeStream(`stream-does-not-exist`);
+      const resumed = await context.resumeStream({ streamId: `stream-does-not-exist` });
 
       // Assert
       expect(resumed).toBeNull();
@@ -175,7 +215,7 @@ export function defineConformanceTests(harness: Harness) {
       source.push(produced[1]!);
       const resumed = await vi.waitFor(
         async () => {
-          const candidate = await context.resumeStream(`stream-4`);
+          const candidate = await context.resumeStream({ streamId: `stream-4` });
           expect(candidate).not.toBeNull();
           return candidate!;
         },
@@ -211,7 +251,7 @@ export function defineConformanceTests(harness: Harness) {
 
       const resumed = await vi.waitFor(
         async () => {
-          const candidate = await context.resumeStream(`stream-5`);
+          const candidate = await context.resumeStream({ streamId: `stream-5` });
           expect(candidate).not.toBeNull();
           return candidate!;
         },
@@ -250,7 +290,7 @@ export function defineConformanceTests(harness: Harness) {
 
       const resumed = await vi.waitFor(
         async () => {
-          const candidate = await context.resumeStream(`stream-9`);
+          const candidate = await context.resumeStream({ streamId: `stream-9` });
           expect(candidate).not.toBeNull();
           return candidate!;
         },
@@ -274,7 +314,7 @@ export function defineConformanceTests(harness: Harness) {
         source.push(UIChunks.textStart({ id: `1` }));
 
         // Act
-        await context.stopStream(`stream-6`);
+        await context.stopStream({ streamId: `stream-6` });
         const received = await collect(stream);
 
         // Assert
@@ -302,7 +342,7 @@ export function defineConformanceTests(harness: Harness) {
         });
 
         // Act
-        await context.stopStream(`stream-7`);
+        await context.stopStream({ streamId: `stream-7` });
         const received = await collect(stream);
 
         // Assert
@@ -319,7 +359,7 @@ export function defineConformanceTests(harness: Harness) {
 
         const resumed = await vi.waitFor(
           async () => {
-            const candidate = await context.resumeStream(`stream-8`);
+            const candidate = await context.resumeStream({ streamId: `stream-8` });
             expect(candidate).not.toBeNull();
             return candidate!;
           },
@@ -328,7 +368,7 @@ export function defineConformanceTests(harness: Harness) {
 
         // Act
         const collected = collect(resumed);
-        await context.stopStream(`stream-8`);
+        await context.stopStream({ streamId: `stream-8` });
         await collect(stream);
 
         // Assert

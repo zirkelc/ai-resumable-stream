@@ -33,7 +33,7 @@ if (!bucket) {
   const LIVE_POLLING = {
     flushIntervalMs: 0,
     batchSize: 1,
-    pollIntervalMs: 100,
+    resumePollIntervalMs: 100,
     stopPollIntervalMs: 100,
   };
 
@@ -144,6 +144,6 @@ if (!bucket) {
         // Assert
         expect(result?.bytes).toEqual(written);
       }
-    });
+    }, 120_000);
   });
 }

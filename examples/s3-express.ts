@@ -63,7 +63,7 @@ async function main() {
     adapter: createStreamAdapter(bucket, {
       flushIntervalMs: 50,
       batchSize: 1,
-      pollIntervalMs: 50,
+      resumePollIntervalMs: 50,
       stopPollIntervalMs: 50,
     }),
     waitUntil: (promise) => {
@@ -93,14 +93,14 @@ async function main() {
    * A later request picks the same stream up by its id. The backlog comes back in a
    * single ranged read, and the rest is followed one request per poll.
    */
-  const resumed = await streams.resumeStream(`chat-1`);
+  const resumed = await streams.resumeStream({ streamId: `chat-1` });
   if (!resumed) throw new Error(`chat-1 should still be running`);
 
   for await (const chunk of resumed) log(`resume`, describe(chunk));
   log(`resume`, `ended`);
 
   /** Once a stream is over there is nothing to resume. */
-  log(`resume`, `resuming again gives ${await streams.resumeStream(`chat-1`)}`);
+  log(`resume`, `resuming again gives ${await streams.resumeStream({ streamId: `chat-1` })}`);
 
   /**
    * Stopping reaches the producer from anywhere, which is the point: the request that
@@ -124,7 +124,7 @@ async function main() {
   }
 
   log(`stop`, `stopping chat-2`);
-  await streams.stopStream(`chat-2`);
+  await streams.stopStream({ streamId: `chat-2` });
 
   while (true) {
     const { done, value } = await liveReader.read();
