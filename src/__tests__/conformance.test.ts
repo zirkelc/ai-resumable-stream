@@ -16,7 +16,7 @@ let redisUrl: string;
  * Only what teardown needs, since the client type of one `redis` release does not
  * describe the other.
  */
-const redisClients: Array<{ isOpen: boolean; destroy: () => void }> = [];
+const redisClients: Array<{ isOpen: boolean; quit: () => Promise<unknown> }> = [];
 
 const redisHarness: Harness = {
   name: `redis`,
@@ -28,7 +28,13 @@ const redisHarness: Harness = {
     await redisServer?.stop();
   },
   afterEach: async () => {
-    await Promise.all(redisClients.splice(0).map((client) => client.isOpen && client.destroy()));
+    /**
+     * `quit` rather than `destroy`: it lets the commands already on the wire finish,
+     * where `destroy` rejects them and the rejection has no caller left to catch it.
+     */
+    await Promise.all(
+      redisClients.splice(0).map((client) => (client.isOpen ? client.quit() : undefined)),
+    );
   },
   createAdapter: async () => {
     const publisher = createClient({ url: redisUrl });

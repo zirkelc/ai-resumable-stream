@@ -64,12 +64,33 @@ export function defineConformanceTests(harness: Harness) {
       await harness.teardown?.();
     });
 
+    /**
+     * The work the adapters defer. A producer keeps writing after the test that started
+     * it has returned, so the harness must not take its connection away mid-write.
+     */
+    let deferred: Array<Promise<unknown>> = [];
+
     afterEach(async () => {
+      /**
+       * Bounded, because a few tests deliberately leave a producer running to prove that
+       * persistence outlives its client. Those are meant never to settle.
+       */
+      await Promise.race([
+        Promise.allSettled(deferred),
+        new Promise((resolve) => setTimeout(resolve, 500)),
+      ]);
+      deferred = [];
+
       await harness.afterEach?.();
     });
 
     async function createContext() {
-      return createResumableUIMessageStream({ adapter: await harness.createAdapter() });
+      return createResumableUIMessageStream({
+        adapter: await harness.createAdapter(),
+        waitUntil: (promise) => {
+          deferred.push(promise);
+        },
+      });
     }
 
     test(`should stream every chunk to the client that started it`, async () => {
