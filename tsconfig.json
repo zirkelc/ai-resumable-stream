@@ -4,5 +4,5 @@
   "compilerOptions": {
     "lib": ["es2024"]
   },
-  "include": ["src", "test"]
+  "include": ["src", "examples"]
 }

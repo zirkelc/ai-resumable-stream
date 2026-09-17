@@ -28,6 +28,10 @@ jobs:
           cache: "pnpm"
       - name: Install
         run: pnpm install
+        env:
+          # Nothing in this job runs Redis, and the postinstall otherwise compiles it
+          # from source on the runner.
+          REDISMS_DISABLE_POSTINSTALL: "true"
       - name: Lint
         run: pnpm lint:ci
       # Type-checks the tests too, which is what enforces the redis v5/v6 client
@@ -39,6 +43,11 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      # Run the distribution's Redis rather than one the postinstall compiles on the
+      # runner. It is set for the whole job because the postinstall fetches the binary
+      # during install, long before the tests ask for it.
+      REDISMS_SYSTEM_BINARY: /usr/bin/redis-server
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
@@ -55,8 +64,6 @@ jobs:
         run: pnpm build
       - name: Test
         run: pnpm test
-        env:
-          REDISMS_SYSTEM_BINARY: /usr/bin/redis-server
 
   preview:
     name: Preview
@@ -72,6 +79,8 @@ jobs:
           cache: "pnpm"
       - name: Install
         run: pnpm install
+        env:
+          REDISMS_DISABLE_POSTINSTALL: "true"
       - name: Build
         run: pnpm build
       - name: Publish Preview

@@ -6,17 +6,18 @@ import { RedisMemoryServer } from "redis-memory-server";
 import { createClient as createClientV5 } from "redis-v5";
 import { createClient as createClientV6 } from "redis-v6";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
-import { createResumableUIMessageStream } from "./resumable-ui-message-stream.js";
+import { createResumableUIMessageStream } from "../../ai-sdk/index.js";
+import { createRedisAdapter } from "./index.js";
 
 /**
  * The peer range allows both redis v5 and v6, whose client types are not mutually
  * assignable (v6 pins RESP3 into the client generics). This file asserts that both
  * versions still satisfy the structural client type: at compile time via the
- * conformance checks below, and at runtime by driving every Redis command the library
- * relies on (`isOpen`, `connect`, `set`/`get`/`incr` through resumable-stream,
- * `subscribe`, `unsubscribe`, and `publish`).
+ * conformance checks below, and at runtime by driving every Redis command the adapter
+ * relies on (`isOpen`, `connect`, `get`/`set`/`del` for the generation pointer,
+ * `set`/`incr` through resumable-stream, `subscribe`, `unsubscribe`, and `publish`).
  */
-type Options = Parameters<typeof createResumableUIMessageStream>[0];
+type Options = Parameters<typeof createRedisAdapter>[0];
 type RedisClient = Options[`publisher`] & Options[`subscriber`];
 
 /**
@@ -85,18 +86,17 @@ async function assertResumableStream(publisher: RedisClient, subscriber: RedisCl
   expect(publisher.isOpen).toBe(false);
   expect(subscriber.isOpen).toBe(false);
 
-  const context = await createResumableUIMessageStream({
-    streamId,
-    publisher,
-    subscriber,
+  const context = createResumableUIMessageStream({
+    adapter: createRedisAdapter({ publisher, subscriber }),
     waitUntil,
   });
 
   // Act - start a stream and resume it while it is still active
-  const stream = await context.startStream(
+  const { stream } = await context.startStream(
     Streams.simulate(chunks, { initialDelayInMs: 25, chunkDelayInMs: 25 }),
+    { streamId },
   );
-  const resumed = await context.resumeStream();
+  const resumed = await context.resumeStream({ streamId });
   const [startedChunks, resumedChunks] = await Promise.all([
     convertAsyncIterableToArray(stream),
     resumed ? convertAsyncIterableToArray(resumed) : Promise.resolve([]),
@@ -121,20 +121,18 @@ async function assertStoppableStream(publisher: RedisClient, subscriber: RedisCl
   const unsubscribeSpy = vi.spyOn(subscriber, `unsubscribe`);
   const publishSpy = vi.spyOn(publisher, `publish`);
 
-  const context = await createResumableUIMessageStream({
-    streamId,
-    publisher,
-    subscriber,
-    abortController,
+  const context = createResumableUIMessageStream({
+    adapter: createRedisAdapter({ publisher, subscriber }),
     waitUntil,
   });
 
   // Act - publish a stop message on the stop channel
-  const stream = await context.startStream(
+  const { stream } = await context.startStream(
     Streams.simulate(chunks, { initialDelayInMs: 50, chunkDelayInMs: 50 }),
+    { streamId, abortController },
   );
   const consumed = convertAsyncIterableToArray(stream);
-  await context.stopStream();
+  await context.stopStream({ streamId });
 
   // Assert - the subscriber received the stop message and aborted the stream
   await vi.waitFor(() => expect(abortController.signal.aborted).toBe(true));

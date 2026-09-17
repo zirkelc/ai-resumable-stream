@@ -1,1 +1,2 @@
-export * from "./resumable-ui-message-stream.js";
+export type { StreamAdapter, StreamCodec } from "./adapter.js";
+export * from "./core.js";
