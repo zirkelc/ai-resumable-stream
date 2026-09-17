@@ -32,7 +32,8 @@
   "scripts": {
     "prepublishOnly": "pnpm build",
     "build": "tsdown",
-    "test": "vitest",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "example:redis": "tsx examples/redis.ts",
     "example:s3-express": "tsx examples/s3-express.ts",
