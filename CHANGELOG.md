@@ -1,5 +1,16 @@
 # Changelog
 
+## [3.0.0](https://github.com/zirkelc/ai-resumable-stream/compare/v2.0.0...v3.0.0) (2026-09-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* `createResumableUIMessageStream` takes an adapter rather than Redis clients, and returns `startStream`, `resumeStream` and `stopStream` that each take a stream id, rather than being bound to one stream. The `convert-*` helpers are gone.
+
+### Features
+
+* make streams provider agnostic with pluggable store adapters ([#15](https://github.com/zirkelc/ai-resumable-stream/issues/15)) ([e6eb61b](https://github.com/zirkelc/ai-resumable-stream/commit/e6eb61b88c7973e31fe20aa902d02864afb202bf))
+
 ## [2.0.0](https://github.com/zirkelc/ai-resumable-stream/compare/v1.4.0...v2.0.0) (2026-07-14)
 
 
