@@ -3,7 +3,7 @@ import { S3Client } from "@aws-sdk/client-s3";
 import { describe, expect, test } from "vitest";
 import { defineConformanceTests } from "../../__tests__/conformance-suite.js";
 import { createS3ExpressAdapter } from "./adapter.js";
-import { createS3Operations, WriteOffsetMismatchError } from "./client.js";
+import { createS3Operations, ObjectExistsError, WriteOffsetMismatchError } from "./client.js";
 import { encodeChunk, joinRecords } from "./log.js";
 
 /**
@@ -120,6 +120,19 @@ if (!bucket) {
 
       // Assert
       await expect(result).rejects.toThrow(WriteOffsetMismatchError);
+    });
+
+    test(`should refuse to create an object that already exists`, async () => {
+      // Arrange
+      const key = `${prefix}/${randomUUID()}`;
+      await s3.create(key, encodeChunk(`first`));
+
+      // Act
+      const result = s3.create(key, encodeChunk(`second`));
+
+      // Assert
+      await expect(result).rejects.toThrow(ObjectExistsError);
+      expect((await s3.read(key, 0))?.bytes).toEqual(encodeChunk(`first`));
     });
 
     test(`should show a reader every committed append and nothing else`, async () => {

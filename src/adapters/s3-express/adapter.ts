@@ -90,6 +90,17 @@ const DEFAULT_MAX_PARTS_PER_SEGMENT = 9_000;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+/**
+ * The name of the pointer object inside a stream's prefix. A generation id may not take
+ * it, or the pointer would sit where that generation's directory has to be.
+ */
+const POINTER_NAME = `current`;
+
+/**
+ * Path segments a generation id cannot become: nothing, a relative path, or the pointer.
+ */
+const RESERVED_SEGMENTS = new Set([``, `.`, `..`, POINTER_NAME]);
+
 const VERSION_RECORD = encodeVersion();
 const STOP_MARKER = encoder.encode(`1`);
 
@@ -178,11 +189,24 @@ export function createStreamAdapter(
    * a directory or collide with the keys of another stream.
    */
   const streamPrefix = (streamId: string) => `${prefix}/${encodeURIComponent(streamId)}`;
-  const pointerKey = (streamId: string) => `${streamPrefix(streamId)}/current`;
+  const pointerKey = (streamId: string) => `${streamPrefix(streamId)}/${POINTER_NAME}`;
   const stopKey = (streamId: string, generationId: string) =>
-    `${streamPrefix(streamId)}/${generationId}/stop`;
+    `${generationPrefix(streamId, generationId)}/stop`;
   const segmentKey = (streamId: string, generationId: string, index: number) =>
-    `${streamPrefix(streamId)}/${generationId}/${index}`;
+    `${generationPrefix(streamId, generationId)}/${index}`;
+
+  /**
+   * A generation id becomes one path segment next to the pointer, for the same reason as
+   * a stream id. Encoding leaves a generated id unchanged, so the layout is the same
+   * whether the caller chose the id or not.
+   */
+  function generationPrefix(streamId: string, generationId: string): string {
+    const segment = encodeURIComponent(generationId);
+    if (RESERVED_SEGMENTS.has(segment)) {
+      throw new Error(`generationId must not be empty, "." or "..", nor "${POINTER_NAME}"`);
+    }
+    return `${streamPrefix(streamId)}/${segment}`;
+  }
 
   async function readPointer(streamId: string): Promise<Pointer | undefined> {
     const result = await s3.read(pointerKey(streamId), 0);
@@ -196,8 +220,9 @@ export function createStreamAdapter(
   }
 
   /**
-   * Stop requests are keyed by generation, so one can never reach the generation that
-   * replaced it, and nothing has to be cleaned up when a stream id is reused.
+   * Stop requests are keyed by generation, so one can never reach another generation of
+   * the same stream id, and nothing has to be cleaned up when a stream id is reused. A stop
+   * may be written before its generation starts, and is found once it does.
    */
   const stopWatchers = createStopWatchers({
     pollIntervalMs: stopPollIntervalMs,
@@ -206,8 +231,7 @@ export function createStreamAdapter(
   });
 
   return {
-    async createStream({ streamId, chunks, waitUntil }) {
-      const generationId = crypto.randomUUID();
+    async createStream({ streamId, generationId, chunks, waitUntil }) {
       const pointer: Pointer = { generationId };
 
       /**
@@ -222,10 +246,14 @@ export function createStreamAdapter(
         offset: VERSION_RECORD.length,
         parts: 1,
       };
-      await s3.put(segment.key, VERSION_RECORD);
+      /**
+       * Created rather than written: a generation id that already has a log belongs to
+       * another generation, and overwriting it would corrupt that stream and leave its
+       * producer appending into an object it no longer agrees with. `ObjectExistsError`
+       * says so instead.
+       */
+      await s3.create(segment.key, VERSION_RECORD);
       await s3.put(pointerKey(streamId), encoder.encode(JSON.stringify(pointer)));
-
-      stopWatchers.begin(streamId, generationId);
 
       const writes = createSerialQueue();
 
@@ -368,11 +396,22 @@ export function createStreamAdapter(
       waitUntil?.(consumed);
     },
 
-    async resumeStream({ streamId }) {
-      const pointer = await readPointer(streamId);
-      if (!pointer) return null;
+    async resumeStream({ streamId, generationId }) {
+      /**
+       * A named generation is read directly, so it can be resumed after a newer one took
+       * the pointer. An id that cannot name a generation names nothing to resume.
+       */
+      const target = generationId ?? (await readPointer(streamId))?.generationId;
+      if (target === undefined) return null;
 
-      const cursor = { key: segmentKey(streamId, pointer.generationId, 0), offset: 0 };
+      let firstKey: string;
+      try {
+        firstKey = segmentKey(streamId, target, 0);
+      } catch {
+        return null;
+      }
+
+      const cursor = { key: firstKey, offset: 0 };
       const replay: Array<string> = [];
       let ended = false;
       let stale = false;
@@ -473,15 +512,17 @@ export function createStreamAdapter(
       });
     },
 
-    async requestStop({ streamId }) {
-      const pointer = await readPointer(streamId);
-      if (!pointer) return;
+    async requestStop({ streamId, generationId }) {
+      const target = generationId ?? (await readPointer(streamId))?.generationId;
+      if (target === undefined) return;
 
-      await s3.put(stopKey(streamId, pointer.generationId), STOP_MARKER);
+      await s3.put(stopKey(streamId, target), STOP_MARKER);
     },
 
-    async onStopRequested({ streamId, onStop }) {
-      return stopWatchers.watch(streamId, onStop);
+    async onStopRequested({ streamId, generationId, onStop }) {
+      /** Fails here, rather than on every poll, for an id that cannot name a generation. */
+      stopKey(streamId, generationId);
+      return stopWatchers.watch(streamId, generationId, onStop);
     },
   };
 }

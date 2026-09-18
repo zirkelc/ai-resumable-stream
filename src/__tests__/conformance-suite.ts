@@ -326,6 +326,85 @@ export function defineConformanceTests(harness: Harness) {
       expect(await collected).toEqual([fresh]);
     });
 
+    describe(`generations`, () => {
+      test(`should resume a specific older generation while a newer one is current`, async () => {
+        // Arrange
+        const context = await createContext();
+        const older = createControlledSource();
+        const newer = createControlledSource();
+        const olderChunks = [
+          UIChunks.textDelta({ id: `1`, delta: `old-1` }),
+          UIChunks.textDelta({ id: `1`, delta: `old-2` }),
+        ];
+        const { stream: olderStream } = await context.startStream(older.stream, {
+          streamId: `stream-16`,
+          generationId: `generation-a`,
+        });
+        older.push(olderChunks[0]!);
+        const { stream: newerStream } = await context.startStream(newer.stream, {
+          streamId: `stream-16`,
+          generationId: `generation-b`,
+        });
+        newer.push(UIChunks.textDelta({ id: `2`, delta: `new-1` }));
+
+        // Act
+        const resumed = await vi.waitFor(
+          async () => {
+            const candidate = await context.resumeStream({
+              streamId: `stream-16`,
+              generationId: `generation-a`,
+            });
+            expect(candidate).not.toBeNull();
+            return candidate!;
+          },
+          { timeout: 5_000 },
+        );
+        const collected = collect(resumed);
+        older.push(olderChunks[1]!);
+        older.close();
+        newer.close();
+        await Promise.all([collect(olderStream), collect(newerStream)]);
+
+        // Assert
+        expect(await collected).toEqual(olderChunks);
+      });
+
+      test(`should resume the newest generation by stream id`, async () => {
+        // Arrange
+        const context = await createContext();
+        const older = createControlledSource();
+        const newer = createControlledSource();
+        const newerChunk = UIChunks.textDelta({ id: `2`, delta: `new-1` });
+        const { stream: olderStream } = await context.startStream(older.stream, {
+          streamId: `stream-17`,
+          generationId: `generation-a`,
+        });
+        older.push(UIChunks.textDelta({ id: `1`, delta: `old-1` }));
+        const { stream: newerStream } = await context.startStream(newer.stream, {
+          streamId: `stream-17`,
+          generationId: `generation-b`,
+        });
+        newer.push(newerChunk);
+
+        // Act
+        const resumed = await vi.waitFor(
+          async () => {
+            const candidate = await context.resumeStream({ streamId: `stream-17` });
+            expect(candidate).not.toBeNull();
+            return candidate!;
+          },
+          { timeout: 5_000 },
+        );
+        const collected = collect(resumed);
+        newer.close();
+        older.close();
+        await Promise.all([collect(olderStream), collect(newerStream)]);
+
+        // Assert
+        expect(await collected).toEqual([newerChunk]);
+      });
+    });
+
     describe(`stopStream`, () => {
       test(`should stop a stream whose source is a plain ReadableStream`, async () => {
         // Arrange
@@ -394,6 +473,144 @@ export function defineConformanceTests(harness: Harness) {
 
         // Assert
         expect((await collected).length).toBe(1);
+      });
+
+      test(`should return the caller-supplied generation id`, async () => {
+        // Arrange
+        const context = await createContext();
+        const source = createControlledSource();
+
+        // Act
+        const result = await context.startStream(source.stream, {
+          streamId: `stream-11`,
+          generationId: `generation-a`,
+        });
+        source.close();
+        await collect(result.stream);
+
+        // Assert
+        expect(result.generationId).toBe(`generation-a`);
+      });
+
+      test(`should not abort a concurrent generation of the same stream id`, async () => {
+        // Arrange
+        const context = await createContext();
+        const first = createControlledSource();
+        const second = createControlledSource();
+        const firstController = new AbortController();
+        const secondController = new AbortController();
+        const { stream: firstStream } = await context.startStream(first.stream, {
+          streamId: `stream-12`,
+          generationId: `generation-a`,
+          abortController: firstController,
+        });
+        const { stream: secondStream } = await context.startStream(second.stream, {
+          streamId: `stream-12`,
+          generationId: `generation-b`,
+          abortController: secondController,
+        });
+
+        // Act
+        await context.stopStream({ streamId: `stream-12`, generationId: `generation-a` });
+        await vi.waitFor(() => expect(firstController.signal.aborted).toBe(true), {
+          timeout: 5_000,
+        });
+
+        /** Long enough for a misrouted stop to arrive by push or by poll. */
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        const secondAborted = secondController.signal.aborted;
+        second.close();
+        await Promise.all([collect(firstStream), collect(secondStream)]);
+
+        // Assert
+        expect(secondAborted).toBe(false);
+      });
+
+      test(`should abort a generation that was stopped before it started`, async () => {
+        // Arrange
+        const context = await createContext();
+        const abortController = new AbortController();
+        const source = createControlledSource();
+
+        // Act
+        await context.stopStream({ streamId: `stream-13`, generationId: `generation-a` });
+        const { stream } = await context.startStream(source.stream, {
+          streamId: `stream-13`,
+          generationId: `generation-a`,
+          abortController,
+        });
+        await vi.waitFor(() => expect(abortController.signal.aborted).toBe(true), {
+          timeout: 5_000,
+        });
+        await collect(stream);
+
+        // Assert
+        expect(abortController.signal.aborted).toBe(true);
+      });
+
+      test(`should stop the current generation when no generation id is given`, async () => {
+        // Arrange
+        const context = await createContext();
+        const first = createControlledSource();
+        const second = createControlledSource();
+        const firstController = new AbortController();
+        const secondController = new AbortController();
+        const { stream: firstStream } = await context.startStream(first.stream, {
+          streamId: `stream-14`,
+          abortController: firstController,
+        });
+        const { stream: secondStream } = await context.startStream(second.stream, {
+          streamId: `stream-14`,
+          abortController: secondController,
+        });
+
+        // Act
+        await context.stopStream({ streamId: `stream-14` });
+        await vi.waitFor(() => expect(secondController.signal.aborted).toBe(true), {
+          timeout: 5_000,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        const firstAborted = firstController.signal.aborted;
+        first.close();
+        await Promise.all([collect(firstStream), collect(secondStream)]);
+
+        // Assert
+        expect(firstAborted).toBe(false);
+      });
+
+      test(`should keep listening for another generation after one generation ends`, async () => {
+        // Arrange
+        const context = await createContext();
+        const first = createControlledSource();
+        const second = createControlledSource();
+        const secondController = new AbortController();
+        const firstFinished = vi.fn();
+        const { stream: firstStream } = await context.startStream(first.stream, {
+          streamId: `stream-15`,
+          generationId: `generation-a`,
+          onFinish: firstFinished,
+        });
+        const { stream: secondStream } = await context.startStream(second.stream, {
+          streamId: `stream-15`,
+          generationId: `generation-b`,
+          abortController: secondController,
+        });
+
+        /** Lets the second generation's listener register before the first one tears down. */
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        first.close();
+        await collect(firstStream);
+        await vi.waitFor(() => expect(firstFinished).toHaveBeenCalled(), { timeout: 5_000 });
+
+        // Act
+        await context.stopStream({ streamId: `stream-15`, generationId: `generation-b` });
+        await vi.waitFor(() => expect(secondController.signal.aborted).toBe(true), {
+          timeout: 5_000,
+        });
+        await collect(secondStream);
+
+        // Assert
+        expect(secondController.signal.aborted).toBe(true);
       });
     });
   });

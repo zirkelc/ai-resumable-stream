@@ -29,28 +29,28 @@ describe(`stop watchers`, () => {
     const onStop = vi.fn();
 
     // Act
-    watchers.watch(`chat`, onStop);
-    watchers.begin(`chat`, `gen-1`);
+    watchers.watch(`chat`, `gen-1`, onStop);
     stops.stop(`chat`, `gen-1`);
 
     // Assert
     await vi.waitFor(() => expect(onStop).toHaveBeenCalled());
   });
 
-  test(`should ask nothing until it is told which generation it guards`, async () => {
+  test(`should report a stop requested before it started watching`, async () => {
     // Arrange
     const stops = createStops();
     const watchers = createStopWatchers({ ...stops, pollIntervalMs: POLL_INTERVAL_MS });
+    const onStop = vi.fn();
+    stops.stop(`chat`, `gen-1`);
 
     // Act
-    watchers.watch(`chat`, vi.fn());
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS * 4));
+    watchers.watch(`chat`, `gen-1`, onStop);
 
     // Assert
-    expect(stops.asked.length).toBe(0);
+    await vi.waitFor(() => expect(onStop).toHaveBeenCalled());
   });
 
-  test(`should give each generation the watcher that waited longest for its stream id`, async () => {
+  test(`should not report the stop of another generation of the same stream id`, async () => {
     // Arrange
     const stops = createStops();
     const watchers = createStopWatchers({ ...stops, pollIntervalMs: POLL_INTERVAL_MS });
@@ -58,16 +58,15 @@ describe(`stop watchers`, () => {
     const onSecond = vi.fn();
 
     /** An id reused while its previous producer is still shutting down. */
-    watchers.watch(`chat`, onFirst);
-    watchers.watch(`chat`, onSecond);
-    watchers.begin(`chat`, `gen-1`);
-    watchers.begin(`chat`, `gen-2`);
+    watchers.watch(`chat`, `gen-1`, onFirst);
+    watchers.watch(`chat`, `gen-2`, onSecond);
 
     // Act
     stops.stop(`chat`, `gen-2`);
 
     // Assert
     await vi.waitFor(() => expect(onSecond).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS * 4));
     expect(onFirst).not.toHaveBeenCalled();
   });
 
@@ -76,8 +75,7 @@ describe(`stop watchers`, () => {
     const stops = createStops();
     const watchers = createStopWatchers({ ...stops, pollIntervalMs: POLL_INTERVAL_MS });
     const onStop = vi.fn();
-    const unwatch = watchers.watch(`chat`, onStop);
-    watchers.begin(`chat`, `gen-1`);
+    const unwatch = watchers.watch(`chat`, `gen-1`, onStop);
     await vi.waitFor(() => expect(stops.asked.length).toBeGreaterThan(0));
 
     // Act
@@ -88,24 +86,6 @@ describe(`stop watchers`, () => {
 
     // Assert
     expect(stops.asked.length).toBe(askedAfterUnwatch);
-    expect(onStop).not.toHaveBeenCalled();
-  });
-
-  test(`should release a watcher that was removed before it guarded anything`, async () => {
-    // Arrange
-    const stops = createStops();
-    const watchers = createStopWatchers({ ...stops, pollIntervalMs: POLL_INTERVAL_MS });
-    const onStop = vi.fn();
-    const unwatch = watchers.watch(`chat`, onStop);
-
-    // Act
-    unwatch();
-    watchers.begin(`chat`, `gen-1`);
-    stops.stop(`chat`, `gen-1`);
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS * 4));
-
-    // Assert
-    expect(stops.asked.length).toBe(0);
     expect(onStop).not.toHaveBeenCalled();
   });
 
@@ -123,8 +103,7 @@ describe(`stop watchers`, () => {
     });
 
     // Act
-    watchers.watch(`chat`, onStop);
-    watchers.begin(`chat`, `gen-1`);
+    watchers.watch(`chat`, `gen-1`, onStop);
 
     // Assert
     await vi.waitFor(() => expect(onStop).toHaveBeenCalled());

@@ -11,6 +11,15 @@ export type StartStreamOptions = {
    */
   streamId?: string;
   /**
+   * Identifies this generation of the stream id, so it can be resumed and stopped on its
+   * own, even after a newer generation of the same stream id has started. Defaults to a
+   * generated id, returned as `generationId`.
+   *
+   * Names exactly one generation, so an id is never used for a second generation of the
+   * same stream id: a resume or a stop kept for it reaches the generation that holds it.
+   */
+  generationId?: string;
+  /**
    * The controller aborted when the stream is stopped. Created if not supplied, so a
    * stream is always stoppable.
    *
@@ -19,6 +28,11 @@ export type StartStreamOptions = {
    * of relying on stream cancellation propagating upstream.
    */
   abortController?: AbortController;
+  /**
+   * Called when listening for stop requests fails. The stream is unaffected, but it
+   * cannot be stopped. Errors thrown by the callback are ignored.
+   */
+  onStopSubscriptionError?: (error: unknown) => void;
   /**
    * Called once the source has ended and the adapter has been told the stream is
    * complete. Runs on every exit path, including errors and stops. Errors are ignored.
@@ -31,6 +45,10 @@ export type ResumeStreamOptions = {
    * The id the stream was started under.
    */
   streamId: string;
+  /**
+   * The generation to resume. Defaults to the one the stream id currently points at.
+   */
+  generationId?: string;
 };
 
 export type StopStreamOptions = {
@@ -38,6 +56,10 @@ export type StopStreamOptions = {
    * The id of the stream to stop.
    */
   streamId: string;
+  /**
+   * The generation to stop. Defaults to the one the stream id currently points at.
+   */
+  generationId?: string;
 };
 
 export type StartStreamResult<CHUNK> = {
@@ -46,7 +68,12 @@ export type StartStreamResult<CHUNK> = {
    */
   streamId: string;
   /**
-   * The chunks, for the client that started the stream. Cancelling it does not stop
+   * The id of this generation, whether supplied or generated. Pass it to `resumeStream` or
+   * `stopStream` to address this generation and no other.
+   */
+  generationId: string;
+  /**
+   * The chunks, for the client that started it. Cancelling it does not stop
    * persistence, so a disconnected client can still resume.
    */
   stream: AsyncIterableStream<CHUNK>;
@@ -60,7 +87,11 @@ export type CreateResumableStreamOptions<CHUNK> = {
    */
   waitUntil?: (promise: Promise<unknown>) => void;
   /**
-   * Generates a stream id when `startStream` is not given one.
+   * Generates a stream id or a generation id when `startStream` is not given one.
+   * Defaults to `crypto.randomUUID`.
+   *
+   * Must return an id that has not been used before: two generations of a stream id can
+   * never share a generation id.
    */
   generateId?: () => string;
 };
@@ -92,14 +123,11 @@ export function createResumableStream<CHUNK>(options: CreateResumableStreamOptio
   ): Promise<StartStreamResult<CHUNK>> {
     const {
       streamId = generateId(),
+      generationId = generateId(),
       abortController = new AbortController(),
       onFinish,
+      onStopSubscriptionError,
     } = startOptions;
-
-    const unsubscribe = await adapter.onStopRequested({
-      streamId,
-      onStop: () => abortController.abort(),
-    });
 
     /**
      * Chunks for the client, exactly as produced. Cancelling stops the client fan-out
@@ -131,27 +159,68 @@ export function createResumableStream<CHUNK>(options: CreateResumableStreamOptio
      */
     const reader = source.getReader();
 
+    /**
+     * Cancelling the source resolves any pending read as done, which ends the drain
+     * loop, and propagates upstream so the producer stops doing work. Registered before
+     * anything can request a stop, so an early stop is not missed.
+     */
+    const onAbort = () => {
+      reader.cancel().catch(() => {
+        /** The source is already gone */
+      });
+    };
+    abortController.signal.addEventListener(`abort`, onAbort, { once: true });
+
+    /**
+     * Set once the source has ended, after which a stop has nothing left to abort and a
+     * subscription has nothing left to guard.
+     */
+    let finished = false;
+    let unsubscribe: (() => unknown) | undefined;
+
+    /**
+     * Stops listening, now or as soon as the listener is registered.
+     */
+    async function finish() {
+      finished = true;
+      abortController.signal.removeEventListener(`abort`, onAbort);
+      const remove = unsubscribe;
+      unsubscribe = undefined;
+      if (remove) await ignoreErrors(remove);
+    }
+
     try {
-      await adapter.createStream({ streamId, chunks: adapterStream, waitUntil });
+      await adapter.createStream({ streamId, generationId, chunks: adapterStream, waitUntil });
     } catch (error) {
       reader.releaseLock();
-      await ignoreErrors(unsubscribe);
+      await finish();
       throw error;
     }
 
     /**
-     * Cancelling the source resolves any pending read as done, which ends the drain
-     * loop, and propagates upstream so the producer stops doing work.
+     * Listening for stops is best effort and never awaited, so a slow or failing store
+     * neither delays the client nor fails the stream. A stop requested in the meantime is
+     * not lost where the adapter keeps it until the listener asks. Started only once the
+     * generation is registered, so a start that is refused never touches the stop listeners
+     * of the generation it collided with.
      */
-    abortController.signal.addEventListener(
-      `abort`,
-      () => {
-        reader.cancel().catch(() => {
-          /** The source is already gone */
+    void (async () => {
+      try {
+        const remove = await adapter.onStopRequested({
+          streamId,
+          generationId,
+          onStop: () => {
+            if (!finished) abortController.abort();
+          },
         });
-      },
-      { once: true },
-    );
+
+        /** The source ended first, so the listener must not outlive it. */
+        if (finished) await ignoreErrors(remove);
+        else unsubscribe = remove;
+      } catch (error) {
+        await ignoreErrors(() => onStopSubscriptionError?.(error));
+      }
+    })();
 
     const drained = (async () => {
       try {
@@ -170,7 +239,7 @@ export function createResumableStream<CHUNK>(options: CreateResumableStreamOptio
         if (!clientCancelled) clientController.error(error);
       } finally {
         reader.releaseLock();
-        await ignoreErrors(unsubscribe);
+        await finish();
         await ignoreErrors(() => adapterController.close());
         await ignoreErrors(() => onFinish?.());
       }
@@ -178,17 +247,21 @@ export function createResumableStream<CHUNK>(options: CreateResumableStreamOptio
 
     waitUntil?.(drained);
 
-    return { streamId, stream: createAsyncIterableStream(clientStream) };
+    return { streamId, generationId, stream: createAsyncIterableStream(clientStream) };
   }
 
   /**
    * Returns the chunks of an in-flight stream, starting from the first one it produced,
-   * or `null` when there is nothing to resume.
+   * or `null` when there is nothing to resume: the generation named by `generationId`, or
+   * the current one.
    */
   async function resumeStream(
     options: ResumeStreamOptions,
   ): Promise<AsyncIterableStream<CHUNK> | null> {
-    const encoded = await adapter.resumeStream({ streamId: options.streamId });
+    const { streamId, generationId } = options;
+    const encoded = await adapter.resumeStream(
+      generationId === undefined ? { streamId } : { streamId, generationId },
+    );
     if (!encoded) return null;
 
     const chunks = encoded.pipeThrough(
@@ -204,11 +277,15 @@ export function createResumableStream<CHUNK>(options: CreateResumableStreamOptio
   }
 
   /**
-   * Asks the process producing the stream to stop. Resolves once the request is
-   * recorded, which may be before the producer has observed it.
+   * Asks the process producing a generation of the stream to stop: the one named by
+   * `generationId`, or the current one. Resolves once the request is recorded, which may
+   * be before the producer has observed it.
    */
   async function stopStream(options: StopStreamOptions): Promise<void> {
-    await adapter.requestStop({ streamId: options.streamId });
+    const { streamId, generationId } = options;
+    await adapter.requestStop(
+      generationId === undefined ? { streamId } : { streamId, generationId },
+    );
   }
 
   return { startStream, resumeStream, stopStream };
