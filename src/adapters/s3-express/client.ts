@@ -17,6 +17,16 @@ export class WriteOffsetMismatchError extends Error {
 }
 
 /**
+ * Raised when an object is created under a key that already holds one.
+ */
+export class ObjectExistsError extends Error {
+  constructor(key: string) {
+    super(`Object ${key} already exists`);
+    this.name = `ObjectExistsError`;
+  }
+}
+
+/**
  * Raised when a segment has used all of its 10,000 parts.
  */
 export class TooManyPartsError extends Error {
@@ -59,6 +69,11 @@ export type S3Operations = {
    */
   put(key: string, body: Uint8Array): Promise<void>;
   /**
+   * Writes an object only if the key holds none, in one request, so two writers cannot
+   * both succeed. Rejects with `ObjectExistsError` otherwise.
+   */
+  create(key: string, body: Uint8Array): Promise<void>;
+  /**
    * Adds bytes to the end of an object. `offset` must be the object's current size.
    */
   append(key: string, offset: number, body: Uint8Array): Promise<void>;
@@ -89,6 +104,20 @@ function nameOf(error: unknown): string | undefined {
 
 function isMissing(error: unknown): boolean {
   return statusOf(error) === 404 || nameOf(error) === `NoSuchKey` || nameOf(error) === `NotFound`;
+}
+
+/**
+ * A conditional write that lost: the object exists (412), or another conditional write
+ * to the same key was in flight (409).
+ */
+function isConditionFailed(error: unknown): boolean {
+  const status = statusOf(error);
+  return (
+    status === 412 ||
+    status === 409 ||
+    nameOf(error) === `PreconditionFailed` ||
+    nameOf(error) === `ConditionalRequestConflict`
+  );
 }
 
 function isUnsatisfiableRange(error: unknown): boolean {
@@ -146,6 +175,17 @@ export function createS3Operations(options: CreateS3OperationsOptions): S3Operat
   return {
     async put(key, body) {
       await client.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: body }));
+    },
+
+    async create(key, body) {
+      try {
+        await client.send(
+          new PutObjectCommand({ Bucket: bucket, Key: key, Body: body, IfNoneMatch: `*` }),
+        );
+      } catch (error) {
+        if (isConditionFailed(error)) throw new ObjectExistsError(key);
+        throw error;
+      }
     },
 
     async append(key, offset, body) {

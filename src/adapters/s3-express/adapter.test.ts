@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import { createFakeS3, type FakeS3 } from "../../__tests__/fake-s3.js";
 import type { S3Operations } from "./client.js";
-import { WriteOffsetMismatchError } from "./client.js";
+import { ObjectExistsError, WriteOffsetMismatchError } from "./client.js";
 import { createStreamAdapter } from "./adapter.js";
 import { decodeRecords, encodeChunk, encodeVersion, joinRecords, RecordType } from "./log.js";
 
@@ -115,7 +115,12 @@ describe(`s3-express adapter`, () => {
     const { waitUntil, settled } = createWaitUntil();
 
     // Act
-    await adapter.createStream({ streamId: `rolling`, chunks: source.stream, waitUntil });
+    await adapter.createStream({
+      streamId: `rolling`,
+      generationId: crypto.randomUUID(),
+      chunks: source.stream,
+      waitUntil,
+    });
     for (const chunk of produced) source.push(chunk);
 
     const resumed = await vi.waitFor(
@@ -155,7 +160,12 @@ describe(`s3-express adapter`, () => {
     const { waitUntil, settled } = createWaitUntil();
 
     // Act
-    await adapter.createStream({ streamId: `lossy`, chunks: source.stream, waitUntil });
+    await adapter.createStream({
+      streamId: `lossy`,
+      generationId: crypto.randomUUID(),
+      chunks: source.stream,
+      waitUntil,
+    });
     for (const chunk of produced) source.push(chunk);
 
     const resumed = await vi.waitFor(
@@ -194,7 +204,12 @@ describe(`s3-express adapter`, () => {
     const { waitUntil, settled } = createWaitUntil();
 
     // Act
-    await adapter.createStream({ streamId: `flaky`, chunks: source.stream, waitUntil });
+    await adapter.createStream({
+      streamId: `flaky`,
+      generationId: crypto.randomUUID(),
+      chunks: source.stream,
+      waitUntil,
+    });
     for (const chunk of produced) source.push(chunk);
 
     const resumed = await vi.waitFor(
@@ -222,13 +237,23 @@ describe(`s3-express adapter`, () => {
     const second = createControlledSource();
     const { waitUntil, settled } = createWaitUntil();
 
-    await adapter.createStream({ streamId: `reused`, chunks: first.stream, waitUntil });
+    await adapter.createStream({
+      streamId: `reused`,
+      generationId: crypto.randomUUID(),
+      chunks: first.stream,
+      waitUntil,
+    });
     first.push(`stale`);
     await vi.waitFor(() => expect(segmentKeys(s3, `reused`).length).toBe(1));
     const [staleSegment] = segmentKeys(s3, `reused`);
 
     // Act
-    await adapter.createStream({ streamId: `reused`, chunks: second.stream, waitUntil });
+    await adapter.createStream({
+      streamId: `reused`,
+      generationId: crypto.randomUUID(),
+      chunks: second.stream,
+      waitUntil,
+    });
     second.push(`fresh`);
 
     /** The first producer shuts down well after the second one took the id. */
@@ -284,5 +309,81 @@ describe(`s3-express adapter`, () => {
     /** The pointer, then every chunk written so far. */
     expect(s3.counts().reads - before).toBe(2);
     await resumed?.cancel();
+  });
+
+  test(`should keep a caller-supplied generation id inside one path segment`, async () => {
+    // Arrange
+    const s3 = createFakeS3();
+    const adapter = createStreamAdapter(s3, FAST);
+    const source = createControlledSource();
+    const { waitUntil, settled } = createWaitUntil();
+
+    // Act
+    await adapter.createStream({
+      streamId: `chat`,
+      generationId: `turn/1`,
+      chunks: source.stream,
+      waitUntil,
+    });
+    await adapter.requestStop({ streamId: `chat` });
+    source.close();
+    await settled();
+
+    // Assert
+    expect(s3.keys().sort()).toEqual([
+      `${FAST.prefix}/chat/current`,
+      `${FAST.prefix}/chat/turn%2F1/0`,
+      `${FAST.prefix}/chat/turn%2F1/stop`,
+    ]);
+  });
+
+  test(`should refuse to write over the log of a generation that already exists`, async () => {
+    // Arrange
+    const s3 = createFakeS3();
+    const adapter = createStreamAdapter(s3, FAST);
+    const first = createControlledSource();
+    const second = createControlledSource();
+    const { waitUntil, settled } = createWaitUntil();
+    await adapter.createStream({
+      streamId: `chat`,
+      generationId: `turn-1`,
+      chunks: first.stream,
+      waitUntil,
+    });
+    first.push(`live`);
+    await vi.waitFor(() => expect(chunksIn(s3, `${FAST.prefix}/chat/turn-1/0`)).toEqual([`live`]));
+
+    // Act
+    const reused = adapter.createStream({
+      streamId: `chat`,
+      generationId: `turn-1`,
+      chunks: second.stream,
+    });
+
+    // Assert
+    await expect(reused).rejects.toThrow(ObjectExistsError);
+
+    /** The running generation kept its log. */
+    expect(chunksIn(s3, `${FAST.prefix}/chat/turn-1/0`)).toEqual([`live`]);
+    first.close();
+    await settled();
+  });
+
+  test(`should refuse a generation id that would collide with the pointer`, async () => {
+    // Arrange
+    const s3 = createFakeS3();
+    const adapter = createStreamAdapter(s3, FAST);
+    const source = createControlledSource();
+
+    // Act
+    const created = adapter.createStream({
+      streamId: `chat`,
+      generationId: `current`,
+      chunks: source.stream,
+    });
+
+    // Assert
+    await expect(created).rejects.toThrow();
+    expect(s3.keys().length).toBe(0);
   });
 });

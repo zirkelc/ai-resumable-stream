@@ -83,7 +83,7 @@ await context.stopStream({ streamId: chatId });
 
 ### `startStream`
 
-Starts a stream and persists chunks as they are produced. Returns the stream for the client that started it, plus the id it was registered under.
+Starts a stream and persists chunks as they are produced. Returns the stream for the client that started it, the id the stream was registered under, and the id of this generation.
 
 > [!TIP]
 > The returned stream is both a `ReadableStream` and an async iterable, so `return stream` and `yield* stream` both work.
@@ -112,15 +112,36 @@ async function sendMessage(chatId: string, messages: UIMessage[]) {
 }
 ```
 
-| Option            | Type                          | Description                                                                                       |
-| ----------------- | ----------------------------- | ------------------------------------------------------------------------------------------------- |
-| `streamId`        | `string`                      | Defaults to a generated id, returned as `streamId`                                                |
-| `abortController` | `AbortController`             | Created if not supplied, so a stream is always stoppable                                          |
-| `onFinish`        | `() => void \| Promise<void>` | Runs once the source has ended, on every exit path including errors and stops. Errors are ignored |
+| Option                    | Type                          | Description                                                                                                                                                           |
+| ------------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `streamId`                | `string`                      | Defaults to a generated id, returned as `streamId`                                                                                                                    |
+| `generationId`            | `string`                      | Identifies this generation, so it can be resumed and stopped on its own. Must not be in use for the stream id. Defaults to a generated id, returned as `generationId` |
+| `abortController`         | `AbortController`             | Created if not supplied                                                                                                                                               |
+| `onStopSubscriptionError` | `(error: unknown) => void`    | Called when listening for stops fails. The stream continues, but cannot be stopped                                                                                    |
+| `onFinish`                | `() => void \| Promise<void>` | Runs once the source has ended, on every exit path including errors and stops. Errors are ignored                                                                     |
+
+#### Abort controller
+
+A generation is stoppable whether or not you pass an `abortController`, because one is created when you do not.
+
+```ts
+// Without an abortController: stopping cancels the source, which propagates upstream
+await streams.startStream(toUIMessageStream({ stream: result.stream }), { streamId });
+
+// With abortController: `streamText` sees the signal
+const abortController = new AbortController();
+const result = streamText({ model, messages, abortSignal: abortController.signal });
+await streams.startStream(toUIMessageStream({ stream: result.stream }), {
+  streamId,
+  abortController,
+});
+```
+
+Pass your own `abortController` to hand the signal to `streamText`. That aborts the provider request directly and lets the AI SDK emit its `abort` chunk and run `onAbort`, instead of relying on cancellation travelling back up the pipe.
 
 ### `resumeStream`
 
-Resume an existing stream and replays every chunk produced so far, then follows the rest live. Returns `null` when there is nothing to resume.
+Resume an existing stream and replays every chunk produced so far, then follows the rest live. Pass `generationId` to resume one generation; omit it to resume the generation the stream id currently points at. Returns `null` when there is nothing to resume.
 
 ```ts
 async function resumeMessage(chatId: string) {
@@ -147,42 +168,88 @@ If your application needs to tell a truncated stream from a complete one, record
 
 ### `stopStream`
 
-Stop an active stream.
+Stop a stream that is still producing. Pass `generationId` to stop one generation; omit it to stop the generation the stream id points at.
 
 ```ts
-async function stopMessage(chatId: string) {
-  await streams.stopStream({ streamId: chatId });
+async function stopMessage(chatId: string, messageId?: string) {
+  await streams.stopStream({ streamId: chatId, generationId: messageId });
 }
 ```
 
-## Stream IDs
+A stop for a generation id may arrive before that generation listens for it, or before it starts. Both shipped adapters keep the request for the generation, so it is stopped as soon as it listens. A stop without a generation id is resolved against the current generation at request time; with no current generation, nothing is kept and the stop has no effect.
 
-A stream is addressed by one `streamId` that you choose, and that id is a pointer rather than the stream itself. Each call to `startStream` creates a generation, which is one run of that id, and repoints the id at it. `resumeStream({ streamId })` resolves the pointer and follows the generation it names, and `stopStream({ streamId })` reaches whichever producer holds the id at the time. There is no second key to store or clear.
+See [Identifiers](#identifiers) for which generation a stop reaches.
 
-The indirection is what makes an id safe to reuse. Starting a new stream under an id that is already in use repoints it, so a resume gets the new stream and none of the old one's chunks, and a producer that is still shutting down cannot tear down the generation that replaced it.
+## Identifiers
 
-- **Pass the chat id** in most applications. It encodes "at most one active stream per chat", and a reconnecting client needs nothing else to call `resumeStream({ streamId: chatId })`.
-- **Pass the assistant message id** when you need to address one specific stream.
-- **Omit it** and one is generated. `startStream` returns it.
+Two ids address a stream.
 
-## Stopping
+| Id             | Names                            | Default                                   |
+| -------------- | -------------------------------- | ----------------------------------------- |
+| `streamId`     | the stream, across generations   | a generated id, returned by `startStream` |
+| `generationId` | one generation of that stream id | a generated id, returned by `startStream` |
 
-Stopping is always possible, because a controller is always available. This works even if you didn't pass an `abortController` directly to `startStream(..., { abortController })`, because one is created automatically if not supplied, ensuring that a stream is always stoppable.
+A generation is one run of a stream id. A stream id points at one generation at a time: each call to `startStream` creates a generation and moves the pointer to it.
 
-```ts
-// Without an abortController: stopping cancels the source, which propagates upstream
-await streams.startStream(toUIMessageStream({ stream: result.stream }), { streamId });
+### Stream ID
 
-// With abortController: `streamText` sees the signal
-const abortController = new AbortController();
-const result = streamText({ model, messages, abortSignal: abortController.signal });
-await streams.startStream(toUIMessageStream({ stream: result.stream }), {
-  streamId,
-  abortController,
-});
+A stream id points at the generation that started last, and addressing the stream id reaches that generation.
+
+```
+startStream({ streamId: "chat-1" })   -> generation A
+startStream({ streamId: "chat-1" })   -> generation B
+
+  chat-1 ──▶ generation B              the pointer moved to the newest generation
+
+  resumeStream({ streamId: "chat-1" })  ──▶ generation B
+  stopStream({ streamId: "chat-1" })    ──▶ generation B
+
+  generation A keeps producing and persisting, but nothing addresses it
 ```
 
-It's recommended to always pass your own `abortController`. Handing the signal to `streamText` aborts the provider request directly and lets the AI SDK emit its `abort` chunk and run `onAbort`, instead of relying on cancellation travelling back up the pipe.
+Pass the chat id in most applications. It allows at most one addressable stream per chat, and a reconnecting client calls `resumeStream({ streamId: chatId })` with the id it already has. Omit it to get a generated id.
+
+Starting a stream under an id already in use moves the pointer. A resume then returns the new generation and none of the old one's chunks, and a producer that is still shutting down cannot tear down the generation that replaced it.
+
+### Stream ID and Generation ID
+
+A generation id addresses one generation, whatever the pointer names. Pass an id the client already holds, such as the id of the user message it sent, and the client addresses that generation without learning a server-generated id.
+
+```
+startStream({ streamId: "chat-1", generationId: "msg-1" })   -> generation msg-1
+startStream({ streamId: "chat-1", generationId: "msg-2" })   -> generation msg-2
+
+  chat-1 ──▶ msg-2                     the pointer still moves to the newest generation
+             msg-1                     the older generation keeps its own address
+
+  resumeStream({ streamId: "chat-1" })                        ──▶ msg-2
+  resumeStream({ streamId: "chat-1", generationId: "msg-1" }) ──▶ msg-1
+  stopStream({ streamId: "chat-1", generationId: "msg-1" })   ──▶ msg-1
+```
+
+```ts
+// POST /chat/:chatId (the client sends the id of its user message)
+const { stream } = await streams.startStream(toUIMessageStream({ stream: result.stream }), {
+  streamId: chatId,
+  generationId: messageId,
+  abortController,
+});
+
+// GET /chat/:chatId/stream?messageId=...
+const stream = await streams.resumeStream({ streamId: chatId, generationId: messageId });
+
+// POST /chat/:chatId/stop
+await streams.stopStream({ streamId: chatId, generationId: messageId });
+```
+
+Use it when generations of one stream id overlap: one client stops a generation while another generation of the same id is already starting, and a stop for the old one must not reach the new one.
+
+**Resume.** `resumeStream({ streamId })` follows the generation the stream id points at. `resumeStream({ streamId, generationId })` follows that generation, even after a newer one moved the pointer. It returns `null` once the generation can no longer be resumed.
+
+**Stop.** `stopStream({ streamId, generationId })` stops that generation, and never a newer generation of the same stream id. `stopStream({ streamId })` stops the generation the stream id points at when the request is made.
+
+> [!WARNING]
+> A generation id names one generation, for good. Starting a second generation under an id an earlier one used, a retry of the same message included, breaks both of them in the Redis adapter: both producers answer the same resume requests, the first one to end makes the other unresumable, and one stop reaches both. The S3 Express adapter refuses the second start with `ObjectExistsError`. The library does not check this for you.
 
 ## Adapters
 
@@ -220,9 +287,15 @@ const context = createResumableUIMessageStream({
 
 This adapter is built on [`resumable-stream`](https://github.com/vercel/resumable-stream). Chunks are never stored in Redis itself. They live in the memory of the process that produces them and reach late subscribers over pub/sub, so Redis carries the signalling and a small pointer per stream, not the messages. There is no chunk retention to configure.
 
-Each stream id points at a generation, which is one run of that id. That pointer is the only key the adapter writes, and it carries a 24 hour expiry so a producer that dies without cleaning up leaves nothing behind for long. Starting a new stream under an id that is already in use moves the pointer to a fresh generation, so a producer that is still shutting down cannot tear down the stream that replaced it. The pointer is deleted as soon as the source ends, which is why a resume request arriving during teardown is told there is nothing to resume instead of racing it.
+Each stream id points at one generation. That pointer carries a 24 hour expiry so a producer that dies without cleaning up leaves nothing behind for long. Starting a new stream under an id that is already in use moves the pointer to a fresh generation, so a producer that is still shutting down cannot tear down the stream that replaced it. The pointer is deleted as soon as the source ends, but only while it still names that generation, which is why a resume request arriving during teardown is told there is nothing to resume instead of racing it.
 
-Stop requests travel on a separate pub/sub channel. A producer subscribes to the channel for its stream id when the stream starts, and aborts its controller when a message arrives, no matter which process published it.
+A resume with a generation id skips the pointer and asks for that generation directly, so it works after a newer generation moved the pointer, for as long as the producer of that generation is alive.
+
+Stop requests travel on a pub/sub channel per generation. A producer subscribes to the channel of its own generation when the stream starts, and aborts its controller when a message arrives, no matter which process published it. Because each generation has its own channel, ending one never removes the listener of another on the shared subscriber connection.
+
+Pub/sub keeps nothing, so a stop published before the producer subscribed would be lost. The adapter therefore also stores the stop: `stopStream` first sets a stop key for the generation (with a one hour expiry), then publishes. The producer first subscribes, then reads the key. Every stop is either delivered to the subscription or found in the key, whatever the order. A stop without a generation id is stored under the generation the pointer names at that moment; with no current generation, nothing is stored.
+
+A generation deletes its stop key when it ends, together with the pointer, so a stop does not outlive the generation it was meant for. The expiry then covers only a stop for a generation that never ran, or one whose producer died before it could clean up.
 
 > [!IMPORTANT]
 > **A stream is only resumable while its producer is alive.**
@@ -236,8 +309,8 @@ sequenceDiagram
     rect rgb(240, 248, 255)
         Note over Client,Redis: startStream
         Client->>Server: POST /chat
-        Server->>Redis: SUBSCRIBE stop channel
         Server->>Redis: SET generation pointer
+        Server-->>Redis: SUBSCRIBE generation stop channel, then GET stop key (background)
         Server->>Server: streamText()
         Server->>Redis: PUBLISH chunks
         Server-->>Client: stream chunks
@@ -257,7 +330,8 @@ sequenceDiagram
     rect rgb(255, 248, 240)
         Note over Client,Redis: stopStream
         Client->>Server: POST /chat/:chatId/stop
-        Server->>Redis: PUBLISH stop
+        Server->>Redis: SET stop key
+        Server->>Redis: PUBLISH stop on the generation channel
         Redis-->>Server: deliver to the producer
         Server->>Server: abortController.abort()
     end
@@ -295,9 +369,13 @@ const adapter = createS3ExpressAdapter({
 
 A stream is one object in the bucket, appended to as chunks are produced. Chunks are buffered in memory and written once `batchSize` of them have collected or `flushIntervalMs` has passed, whichever comes first, so a stream costs one request per flush rather than one per chunk.
 
-Each stream id points at a generation, which is one run of that id, and the pointer is a small object next to the log. Every key the adapter writes sits under the generation, the stop marker included. A producer that has been superseded therefore cannot append into the log of the stream that replaced it, and a stop request cannot reach a generation other than the one it was resolved against.
+Each stream id points at one generation, and the pointer is a small object next to the log. Every key the adapter writes sits under the generation, the stop marker included. A producer that has been superseded therefore cannot append into the log of the stream that replaced it, and a stop request cannot reach a generation other than the one it was resolved against.
 
-Stop requests are an object too. `stopStream` writes a marker under the current generation, and the producer checks for it every `stopPollIntervalMs` and aborts its controller when it appears.
+Stop requests are an object too. `stopStream` writes a marker under the generation it names, or under the generation the pointer names when it names none, and the producer checks for it every `stopPollIntervalMs` and aborts its controller when it appears. The marker stays in the bucket, so a stop written before its run started is found once the run starts.
+
+A caller-supplied generation id is URL-encoded into one path segment, like the stream id. It must not be empty, `.`, `..` or `current`, since the pointer object already uses that name.
+
+The first object of a generation's log is created with a conditional write (`If-None-Match: *`), so a generation id whose log already exists fails with `ObjectExistsError` instead of overwriting a log another producer is still appending to. A resume with a generation id skips the pointer and reads that generation's log directly.
 
 > [!IMPORTANT]
 > The bucket must be an [S3 Express One Zone](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-one-zone.html) directory bucket in an Availability Zone. Appends exist nowhere else in S3, and they are what make a stream one object rather than one object per batch.
@@ -305,7 +383,7 @@ Stop requests are an object too. `stopStream` writes a marker under the current 
 **How a stream is stored.** One appendable object, holding chunks, liveness and completion in the same log. A resuming reader replays the whole backlog in a single ranged read, then follows the tail at one request per poll.
 
 ```
-{prefix}/{streamId}/current                pointer to the current generation
+{prefix}/{streamId}/current                pointer to the generation that started last
 {prefix}/{streamId}/{generationId}/0       the log
 {prefix}/{streamId}/{generationId}/stop    stop marker
 ```
@@ -319,7 +397,7 @@ sequenceDiagram
     rect rgb(240, 248, 255)
         Note over Client,S3: startStream
         Client->>Server: POST /chat
-        Server->>S3: PutObject log (format version)
+        Server->>S3: PutObject log (format version), If-None-Match
         Server->>S3: PutObject pointer
         Server->>Server: streamText()
         par write the log
@@ -351,7 +429,7 @@ sequenceDiagram
     rect rgb(255, 248, 240)
         Note over Client,S3: stopStream
         Client->>Server: POST /chat/:chatId/stop
-        Server->>S3: GetObject pointer
+        Server->>S3: GetObject pointer (only without a generation id)
         Server->>S3: PutObject stop marker
         S3-->>Server: the producer's next poll finds it
         Server->>Server: abortController.abort()
@@ -381,25 +459,25 @@ A `StreamAdapter` is four methods. Implement them against the store you want and
 import type { StreamAdapter } from "ai-resumable-stream";
 
 const adapter: StreamAdapter = {
-  createStream({ streamId, chunks, waitUntil }) { ... },
-  resumeStream({ streamId }) { ... },
-  requestStop({ streamId }) { ... },
-  onStopRequested({ streamId, onStop }) { ... },
+  createStream({ streamId, generationId, chunks, waitUntil }) { ... },
+  resumeStream({ streamId, generationId }) { ... },
+  requestStop({ streamId, generationId }) { ... },
+  onStopRequested({ streamId, generationId, onStop }) { ... },
 };
 ```
 
-| Method            | Contract                                                                                                                                                           |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `createStream`    | Discards any state left from a previous stream with the same id, registers the id, consumes `chunks` in the background. Resolves once resumable, not once complete |
-| `resumeStream`    | Chunks already produced, then those still to come. `null` when unknown, finished, or expired                                                                       |
-| `requestStop`     | Safe to call for an unknown or finished stream                                                                                                                     |
-| `onStopRequested` | Producer-side listener. Returns a function that removes it                                                                                                         |
+| Method            | Contract                                                                                                                                                                                                          |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `createStream`    | Discards any state left from a previous stream with the same id, points the id at `generationId`, consumes `chunks` in the background. Resolves once resumable, not once complete                                 |
+| `resumeStream`    | Chunks already produced, then those still to come, of the generation `generationId` names, or of the generation the stream id points at when omitted. `null` when unknown, finished, or expired                   |
+| `requestStop`     | Stops the generation `generationId` names, or the generation the stream id points at when omitted. Safe to call for an unknown or finished stream. Should keep the request if the generation is not listening yet |
+| `onStopRequested` | Producer-side listener for one generation. Reports a stop kept from before it registered. Returns a function that removes this listener and no other                                                              |
 
 `createStream` receives a `ReadableStream<string>` of encoded chunks. It has to consume that stream in the background until it ends, and `resumeStream` has to return the same strings in the same order, followed by the ones still to come. The strings are opaque, so any framing they need to survive your store is the adapter's own concern.
 
-`requestStop` and `onStopRequested` usually run in different processes, so the stop signal has to travel through the store as well, by a subscription, a poll, or whatever the backend offers.
+`requestStop` and `onStopRequested` usually run in different processes, so the stop signal has to travel through the store as well, by a subscription, a poll, or whatever the backend offers. Key it by generation, so a stop never reaches another generation of the same stream id. `onStopRequested` is never awaited by `startStream`, and a rejection only means that run cannot be stopped.
 
-The tests in [`src/__tests__/conformance-suite.ts`](./src/__tests__/conformance-suite.ts) run against both shipped adapters and cover what an adapter has to get right: replay followed by live chunks on resume, persistence that continues after the client disconnects, a reused id that discards the previous stream's chunks, and a stop that reaches a reader who resumed.
+The tests in [`src/__tests__/conformance-suite.ts`](./src/__tests__/conformance-suite.ts) run against both shipped adapters and cover what an adapter has to get right: replay followed by live chunks on resume, persistence that continues after the client disconnects, a reused id that discards the previous stream's chunks, a stop that reaches a reader who resumed, a stop that reaches only the generation it names, including one requested before that generation started, and a resume of an older generation while a newer one is current.
 
 ## Advanced
 
@@ -534,7 +612,7 @@ function createResumableStream<CHUNK>(options: CreateResumableStreamOptions<CHUN
   startStream: (
     source: ReadableStream<CHUNK>,
     options?: StartStreamOptions,
-  ) => Promise<{ streamId: string; stream: AsyncIterableStream<CHUNK> }>;
+  ) => Promise<StartStreamResult<CHUNK>>;
   resumeStream: (options: ResumeStreamOptions) => Promise<AsyncIterableStream<CHUNK> | null>;
   stopStream: (options: StopStreamOptions) => Promise<void>;
 };
@@ -548,25 +626,35 @@ type CreateResumableStreamOptions<CHUNK> = {
 
 type StartStreamOptions = {
   streamId?: string;
+  generationId?: string;
   abortController?: AbortController;
+  onStopSubscriptionError?: (error: unknown) => void;
   onFinish?: () => void | Promise<void>;
+};
+
+type StartStreamResult<CHUNK> = {
+  streamId: string;
+  generationId: string;
+  stream: AsyncIterableStream<CHUNK>;
 };
 
 type ResumeStreamOptions = {
   streamId: string;
+  generationId?: string;
 };
 
 type StopStreamOptions = {
   streamId: string;
+  generationId?: string;
 };
 ```
 
-| Option       | Type                 | Required | Description                                                                         |
-| ------------ | -------------------- | -------- | ----------------------------------------------------------------------------------- |
-| `adapter`    | `StreamAdapter`      | Yes      | Where chunks are stored and how stop requests travel                                |
-| `codec`      | `StreamCodec<CHUNK>` | Yes      | Translates between chunks and the strings an adapter stores                         |
-| `waitUntil`  | `(promise) => void`  | No       | Keeps the host process alive until persistence finishes. Omit on long-lived servers |
-| `generateId` | `() => string`       | No       | Generates a stream id when `startStream` is not given one                           |
+| Option       | Type                 | Required | Description                                                                                                                                     |
+| ------------ | -------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `adapter`    | `StreamAdapter`      | Yes      | Where chunks are stored and how stop requests travel                                                                                            |
+| `codec`      | `StreamCodec<CHUNK>` | Yes      | Translates between chunks and the strings an adapter stores                                                                                     |
+| `waitUntil`  | `(promise) => void`  | No       | Keeps the host process alive until persistence finishes. Omit on long-lived servers                                                             |
+| `generateId` | `() => string`       | No       | Generates a stream id or a generation id when `startStream` is not given one. Must return a fresh id each call. Defaults to `crypto.randomUUID` |
 
 ### `createResumableUIMessageStream`
 
@@ -584,12 +672,20 @@ function createResumableUIMessageStream(
 type StreamAdapter = {
   createStream(options: {
     streamId: string;
+    generationId: string;
     chunks: ReadableStream<string>;
     waitUntil?: (promise: Promise<unknown>) => void;
   }): Promise<void>;
-  resumeStream(options: { streamId: string }): Promise<ReadableStream<string> | null>;
-  requestStop(options: { streamId: string }): Promise<void>;
-  onStopRequested(options: { streamId: string; onStop: () => void }): Promise<() => void>;
+  resumeStream(options: {
+    streamId: string;
+    generationId?: string;
+  }): Promise<ReadableStream<string> | null>;
+  requestStop(options: { streamId: string; generationId?: string }): Promise<void>;
+  onStopRequested(options: {
+    streamId: string;
+    generationId: string;
+    onStop: () => void;
+  }): Promise<() => void>;
 };
 ```
 

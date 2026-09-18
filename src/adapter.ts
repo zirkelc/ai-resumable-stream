@@ -11,9 +11,17 @@ export type StreamAdapter = {
    *
    * Resolves once the stream is registered and resumable, not once it is complete.
    * A stream id may be reused, so implementations must not replay stale chunks.
+   *
+   * A generation id names one generation and is never reused: what an implementation does
+   * with a reused one is its own business, and no implementation has to make it work.
    */
   createStream(options: {
     streamId: string;
+    /**
+     * Identifies this generation of the stream id, so it can be resumed and stopped on its
+     * own. The stream id is repointed at it.
+     */
+    generationId: string;
     chunks: ReadableStream<string>;
     /**
      * Keeps the host process alive until the promise settles.
@@ -25,19 +33,36 @@ export type StreamAdapter = {
    * Returns the chunks of an in-flight stream: those already produced, followed by
    * those still to come, ending when the stream ends.
    *
+   * With `generationId`, follows that generation even when a newer one of the stream id is
+   * current. Without it, follows the generation the stream id currently points at.
+   *
    * Resolves `null` when the stream is unknown, already finished, or expired.
    */
-  resumeStream(options: { streamId: string }): Promise<ReadableStream<string> | null>;
+  resumeStream(options: {
+    streamId: string;
+    generationId?: string;
+  }): Promise<ReadableStream<string> | null>;
   /**
-   * Signals whichever process owns the stream to stop producing.
-   * Safe to call for an unknown or finished stream.
+   * Signals the process that owns a generation of the stream to stop producing.
+   *
+   * With `generationId`, only that generation is stopped, including one that has not
+   * started yet if the store can keep the request until it does. Without it, the generation
+   * the stream id currently points at is stopped, and there is nothing to stop when it
+   * points at none. Safe to call for an unknown or finished stream.
    */
-  requestStop(options: { streamId: string }): Promise<void>;
+  requestStop(options: { streamId: string; generationId?: string }): Promise<void>;
   /**
-   * Registers a producer-side listener for stop requests. Returns a function that
-   * removes the listener.
+   * Registers a producer-side listener for stop requests addressed to one generation. Returns
+   * a function that removes the listener, and only that listener.
+   *
+   * A stop requested for the generation before the listener was registered should still be
+   * reported, where the store can keep it.
    */
-  onStopRequested(options: { streamId: string; onStop: () => void }): Promise<() => void>;
+  onStopRequested(options: {
+    streamId: string;
+    generationId: string;
+    onStop: () => void;
+  }): Promise<() => void>;
 };
 
 /**

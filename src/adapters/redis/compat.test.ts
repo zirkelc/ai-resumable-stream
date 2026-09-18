@@ -14,7 +14,8 @@ import { createRedisAdapter } from "./index.js";
  * assignable (v6 pins RESP3 into the client generics). This file asserts that both
  * versions still satisfy the structural client type: at compile time via the
  * conformance checks below, and at runtime by driving every Redis command the adapter
- * relies on (`isOpen`, `connect`, `get`/`set`/`del` for the generation pointer,
+ * relies on (`isOpen`, `connect`, `get`/`set`/`del`/`eval` for the generation pointer and its
+ * stop key,
  * `set`/`incr` through resumable-stream, `subscribe`, `unsubscribe`, and `publish`).
  */
 type Options = Parameters<typeof createRedisAdapter>[0];

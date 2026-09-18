@@ -1,4 +1,5 @@
 import {
+  ObjectExistsError,
   type S3HeadResult,
   type S3Operations,
   type S3ReadResult,
@@ -64,6 +65,12 @@ export function createFakeS3(options: CreateFakeS3Options = {}): FakeS3 {
 
     async put(key, body) {
       writes += 1;
+      objects.set(key, { body: new Uint8Array(body), parts: 1, lastModified: Date.now() });
+    },
+
+    async create(key, body) {
+      writes += 1;
+      if (objects.has(key)) throw new ObjectExistsError(key);
       objects.set(key, { body: new Uint8Array(body), parts: 1, lastModified: Date.now() });
     },
 
