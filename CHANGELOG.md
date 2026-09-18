@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.0](https://github.com/zirkelc/ai-resumable-stream/compare/v3.0.0...v3.1.0) (2026-09-18)
+
+
+### Features
+
+* stop and resume a single generation of a stream ([#17](https://github.com/zirkelc/ai-resumable-stream/issues/17)) ([51e460e](https://github.com/zirkelc/ai-resumable-stream/commit/51e460ebf5b068de94ab103a917b38a5e3924217))
+
 ## [3.0.0](https://github.com/zirkelc/ai-resumable-stream/compare/v2.0.0...v3.0.0) (2026-09-17)
 
 

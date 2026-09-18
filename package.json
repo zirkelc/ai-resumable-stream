@@ -1,6 +1,6 @@
 {
   "name": "ai-resumable-stream",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "Resume and stop AI SDK streams, backed by S3, Redis, or any store you provide",
   "keywords": [
     "ai",
