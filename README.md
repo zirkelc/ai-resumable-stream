@@ -11,7 +11,7 @@
 
 This library provides resumable streaming for UI message streams created by [`streamText()`](https://ai-sdk.dev/docs/reference/ai-sdk-core/stream-text) in the AI SDK. The library stores chunks as they are produced. Clients can then resume an interrupted stream, and any request can stop an active stream.
 
-You choose where the chunks are stored. The library includes adapters for Redis and S3 Express. You can also write your own adapter by implementing four methods.
+You choose where the chunks are stored. The library includes adapters for Redis, S3 Express and DynamoDB. You can also write your own adapter by implementing four methods.
 
 **Why?**
 
@@ -29,11 +29,12 @@ npm install ai-resumable-stream
 
 Install the optional peer dependencies for the features you use:
 
-| Package              | Needed for                                |
-| -------------------- | ----------------------------------------- |
-| `redis`              | `ai-resumable-stream/adapters/redis`      |
-| `@aws-sdk/client-s3` | `ai-resumable-stream/adapters/s3-express` |
-| `ai`                 | `ai-resumable-stream/ai-sdk`              |
+| Package                    | Needed for                                |
+| -------------------------- | ----------------------------------------- |
+| `redis`                    | `ai-resumable-stream/adapters/redis`      |
+| `@aws-sdk/client-s3`       | `ai-resumable-stream/adapters/s3-express` |
+| `@aws-sdk/client-dynamodb` | `ai-resumable-stream/adapters/dynamodb`   |
+| `ai`                       | `ai-resumable-stream/ai-sdk`              |
 
 > [!NOTE]
 > Version compatibility:
@@ -251,6 +252,7 @@ Use an id that the client already knows, for example the id of the user message 
 | ------------------------- | ----------------------------------------- | ----------------------------------- | ---------------------------- | -------------------------------- |
 | [Redis](#redis)           | `ai-resumable-stream/adapters/redis`      | Memory of the producing process     | Yes                          | Your Redis instance              |
 | [S3 Express](#s3-express) | `ai-resumable-stream/adapters/s3-express` | One appendable object in the bucket | No                           | One billed `PutObject` per flush |
+| [DynamoDB](#dynamodb)     | `ai-resumable-stream/adapters/dynamodb`   | One run of items in the table       | No                           | One billed write per flush       |
 
 ### Redis
 
@@ -321,6 +323,46 @@ const adapter = createS3ExpressAdapter({
 > The adapter does not delete objects when a stream finishes. Set a lifecycle expiration rule on the bucket with `prefix` as the filter, and grant `s3express:CreateSession` with `ReadWrite` to `lifecycle.s3.amazonaws.com` in the bucket policy. Without this grant, the rule does nothing and the objects are never deleted. See [Cleanup](https://github.com/zirkelc/ai-resumable-stream/blob/main/docs/adapter-s3-express.md#cleanup).
 
 See [docs/adapter-s3-express.md](https://github.com/zirkelc/ai-resumable-stream/blob/main/docs/adapter-s3-express.md) for how it works, the storage layout, a sequence diagram, cost and liveness details, and a full example.
+
+### DynamoDB
+
+This adapter requires a DynamoDB table and a `DynamoDBClient`. You create the client, so you control the credentials, the region and the retry behaviour.
+
+The chunks are stored in the table, not in the memory of the producing process. A resume reads the chunks from the table. It does not need a response from the producing process, and any instance with access to the table can serve it.
+
+> [!NOTE]
+> You need to install `@aws-sdk/client-dynamodb` to use this adapter.
+
+> [!IMPORTANT]
+> The table needs a string partition key, a string sort key, and [time to live](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/TTL.html) enabled on `ttlAttributeName`. The adapter does not create the table. See [Table](https://github.com/zirkelc/ai-resumable-stream/blob/main/docs/adapter-dynamodb.md#table).
+
+```ts
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { createDynamoDBAdapter } from "ai-resumable-stream/adapters/dynamodb";
+
+const adapter = createDynamoDBAdapter({
+  client: new DynamoDBClient({ region: `us-east-1` }),
+  tableName: `streams`,
+});
+```
+
+| Option                 | Type             | Default               | Description                                                                                         |
+| ---------------------- | ---------------- | --------------------- | --------------------------------------------------------------------------------------------------- |
+| `client`               | `DynamoDBClient` |                       | The DynamoDB client. You create and configure it                                                    |
+| `tableName`            | `string`         |                       | The table that holds the streams                                                                    |
+| `partitionKeyName`     | `string`         | `pk`                  | Attribute that holds the partition key of the table                                                 |
+| `sortKeyName`          | `string`         | `sk`                  | Attribute that holds the sort key of the table                                                      |
+| `ttlAttributeName`     | `string`         | `expiresAt`           | Attribute that time to live is configured on                                                        |
+| `prefix`               | `string`         | `ai-resumable-stream` | Prefix of all partition keys that the adapter writes                                                |
+| `flushIntervalMs`      | `number`         | `250`                 | Maximum time that chunks stay in memory before they are written                                     |
+| `batchSize`            | `number`         | `50`                  | Number of buffered chunks that triggers a write                                                     |
+| `resumePollIntervalMs` | `number`         | `500`                 | Interval at which a resumed stream checks for new chunks                                            |
+| `stopPollIntervalMs`   | `number`         | `1000`                | Interval at which a producer checks for a stop request                                              |
+| `heartbeatMs`          | `number`         | `5000`                | Interval at which an idle producer records that it is alive                                         |
+| `deadAfterMs`          | `number`         | `30000`               | Time without writes after which a producer is considered dead. Must be at least twice `heartbeatMs` |
+| `ttlSeconds`           | `number`         | `86400`               | Time after which an item expires. It bounds how long a stream can be replayed                       |
+
+See [docs/adapter-dynamodb.md](https://github.com/zirkelc/ai-resumable-stream/blob/main/docs/adapter-dynamodb.md) for how it works, the storage layout, a sequence diagram, cost and liveness details, and a full example.
 
 ### Custom `StreamAdapter`
 
@@ -413,6 +455,7 @@ The [`examples/`](./examples) folder contains one runnable example for each adap
 ```sh
 pnpm example:redis        # starts a temporary Redis server
 pnpm example:s3-express   # uses an in-memory bucket
+pnpm example:dynamodb     # uses an in-memory table
 ```
 
 ### tRPC

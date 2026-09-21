@@ -1,7 +1,8 @@
 import type { S3Client } from "@aws-sdk/client-s3";
 import type { StreamAdapter } from "../../adapter.js";
 import { createS3Operations, type S3Operations, WriteOffsetMismatchError } from "./client.js";
-import { delay } from "./delay.js";
+import { delay } from "../../internal/delay.js";
+import { assertHeartbeatWindow, unref } from "../../internal/heartbeat.js";
 import {
   collectChunks,
   decodeRecords,
@@ -13,8 +14,8 @@ import {
   joinRecords,
   Outcome,
 } from "./log.js";
-import { createSerialQueue } from "./serial.js";
-import { createStopWatchers } from "./stop-watcher.js";
+import { createSerialQueue } from "../../internal/serial.js";
+import { createStopWatchers } from "../../internal/stop-watcher.js";
 
 export type S3ExpressAdapterOptions = {
   /**
@@ -113,23 +114,6 @@ const STOP_MARKER = encoder.encode(`1`);
 type Pointer = {
   generationId: string;
 };
-
-function unref(timer: unknown): void {
-  (timer as { unref?: () => void }).unref?.();
-}
-
-/**
- * A death threshold that is not comfortably larger than the beat will declare healthy
- * producers dead, which truncates live streams. Refuse the configuration outright rather
- * than let it corrupt streams under load.
- */
-function assertHeartbeatWindow(heartbeatMs: number, deadAfterMs: number): void {
-  if (deadAfterMs < heartbeatMs * 2) {
-    throw new Error(
-      `deadAfterMs (${deadAfterMs}) must be at least twice heartbeatMs (${heartbeatMs})`,
-    );
-  }
-}
 
 /**
  * Whether a log has been silent long enough for its producer to be presumed dead.

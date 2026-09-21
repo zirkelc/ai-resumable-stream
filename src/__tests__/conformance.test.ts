@@ -1,12 +1,14 @@
 import { createClient } from "redis";
 import { RedisMemoryServer } from "redis-memory-server";
+import { createDynamoDBAdapter } from "../adapters/dynamodb/index.js";
 import { createRedisAdapter } from "../adapters/redis/index.js";
 import { createStreamAdapter } from "../adapters/s3-express/adapter.js";
 import { defineConformanceTests, FAST_POLLING, type Harness } from "./conformance-suite.js";
 import { createFakeS3 } from "./fake-s3.js";
+import { createLocalDynamoDB, type LocalDynamoDB } from "./local-dynamodb.js";
 
 /**
- * Both adapters the package ships, held to one contract.
+ * Every adapter the package ships, held to one contract.
  */
 
 /** Redis */
@@ -54,5 +56,28 @@ const s3ExpressHarness: Harness = {
   createAdapter: async () => createStreamAdapter(createFakeS3(), FAST_POLLING),
 };
 
+/**
+ * The DynamoDB adapter over an in-memory table. `dynalite` serves the real DynamoDB API,
+ * so the conditional writes and range queries the adapter leans on are the real ones.
+ */
+let dynamo: LocalDynamoDB | undefined;
+
+const dynamoHarness: Harness = {
+  name: `dynamodb`,
+  setup: async () => {
+    dynamo = await createLocalDynamoDB();
+  },
+  teardown: async () => {
+    await dynamo?.stop();
+  },
+  createAdapter: async () =>
+    createDynamoDBAdapter({
+      client: dynamo!.client,
+      tableName: dynamo!.tableName,
+      ...FAST_POLLING,
+    }),
+};
+
 defineConformanceTests(redisHarness);
 defineConformanceTests(s3ExpressHarness);
+defineConformanceTests(dynamoHarness);
