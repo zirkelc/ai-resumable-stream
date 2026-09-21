@@ -136,6 +136,7 @@ async function sendMessage(chatId: string, messages: UIMessage[]) {
 | `streamId`                | `string`                      | Id of the stream. Use it to resume or stop the stream. Defaults to a generated id, returned as `streamId`                                                         |
 | `generationId`            | `string`                      | Id of this generation. Use it to resume or stop only this generation. Must be unique within the stream id. Defaults to a generated id, returned as `generationId` |
 | `abortController`         | `AbortController`             | Aborted when the stream is stopped. Created by the library if you do not pass one                                                                                 |
+| `stopTimeoutMs`           | `number`                      | Time that a stop waits for the source to end before it cancels the source. Defaults to `1000` with a supplied `abortController`, `0` without one                  |
 | `onStopSubscriptionError` | `(error: unknown) => void`    | Called when the subscription to stop requests fails. The stream continues, but it cannot be stopped                                                               |
 | `onFinish`                | `() => void \| Promise<void>` | Called after the source stream has ended, also after an error or a stop. Errors thrown by the callback are ignored                                                |
 
@@ -157,6 +158,24 @@ await context.startStream(toUIMessageStream({ stream: result.stream }), {
 ```
 
 We recommend that you pass your own `abortController` and give its signal to `streamText`. A stop then aborts the request to the provider directly, and the AI SDK emits its `abort` chunk and calls `onAbort`. Without it, a stop only cancels the source stream, and the cancellation must propagate back to `streamText`.
+
+#### Stop timeout
+
+A stop aborts the `abortController` and waits up to `stopTimeoutMs` for the source to end. This lets `streamText` emit its `abort` chunk, so `onEnd` and `onFinish` get `isAborted: true`. A source that does not end in time is cancelled.
+
+With `stopTimeoutMs: 0`, or without an `abortController`, a stop cancels the source immediately and `isAborted` is `false`.
+
+```ts
+const abortController = new AbortController();
+const result = streamText({ model, messages, abortSignal: abortController.signal });
+const source = toUIMessageStream({
+  stream: result.stream,
+  onFinish: ({ isAborted, responseMessage }) => {
+    // `isAborted` is `true` after a stop
+  },
+});
+await context.startStream(source, { streamId, abortController });
+```
 
 ### `resumeStream`
 
@@ -504,6 +523,7 @@ type StartStreamOptions = {
   streamId?: string;
   generationId?: string;
   abortController?: AbortController;
+  stopTimeoutMs?: number;
   onStopSubscriptionError?: (error: unknown) => void;
   onFinish?: () => void | Promise<void>;
 };

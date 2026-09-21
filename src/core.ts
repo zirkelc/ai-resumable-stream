@@ -29,6 +29,23 @@ export type StartStreamOptions = {
    */
   abortController?: AbortController;
   /**
+   * How long a stop waits for the source to end on its own before it cancels the source.
+   * Defaults to `1_000` when an `abortController` is supplied, and to `0` otherwise, since
+   * a controller created here has no other listener that could end the source.
+   *
+   * A producer that observes the signal ends its stream itself, and the chunks it emits
+   * while doing so still reach the client and the adapter. For `streamText` that is the
+   * `abort` chunk, which is what makes `isAborted` true in the UI message stream's
+   * `onEnd`/`onFinish`: cancelling first ends that stream before the chunk arrives. A
+   * source that ignores the signal, or hangs, is cancelled once the time runs out, so it
+   * may produce chunks for that long after the stop. `0` cancels the source immediately.
+   *
+   * Must be longer than the work a producer does before it ends its stream, for `streamText`
+   * the `onAbort` callbacks it awaits before it emits the `abort` chunk. Values longer than a
+   * timer can hold, such as `Infinity`, never cancel the source.
+   */
+  stopTimeoutMs?: number;
+  /**
    * Called when listening for stop requests fails. The stream is unaffected, but it
    * cannot be stopped. Errors thrown by the callback are ignored.
    */
@@ -97,6 +114,11 @@ export type CreateResumableStreamOptions<CHUNK> = {
 };
 
 /**
+ * The longest delay a timer accepts. A longer one fires almost immediately instead.
+ */
+const MAX_TIMEOUT_MS = 2_147_483_647;
+
+/**
  * Ignores teardown failures so they never mask the original outcome.
  */
 async function ignoreErrors(fn: () => unknown): Promise<void> {
@@ -124,10 +146,12 @@ export function createResumableStream<CHUNK>(options: CreateResumableStreamOptio
     const {
       streamId = generateId(),
       generationId = generateId(),
-      abortController = new AbortController(),
+      abortController: suppliedController,
+      stopTimeoutMs = suppliedController ? 1_000 : 0,
       onFinish,
       onStopSubscriptionError,
     } = startOptions;
+    const abortController = suppliedController ?? new AbortController();
 
     /**
      * Chunks for the client, exactly as produced. Cancelling stops the client fan-out
@@ -161,13 +185,24 @@ export function createResumableStream<CHUNK>(options: CreateResumableStreamOptio
 
     /**
      * Cancelling the source resolves any pending read as done, which ends the drain
-     * loop, and propagates upstream so the producer stops doing work. Registered before
-     * anything can request a stop, so an early stop is not missed.
+     * loop, and propagates upstream so the producer stops doing work. Deferred by
+     * `stopTimeoutMs`, so a producer that observes the signal can end its stream first and
+     * the chunks that report the stop are still drained. Registered before anything can
+     * request a stop, so an early stop is not missed.
      */
-    const onAbort = () => {
+    let cancelTimer: ReturnType<typeof setTimeout> | undefined;
+    const cancelSource = () => {
       reader.cancel().catch(() => {
         /** The source is already gone */
       });
+    };
+    const onAbort = () => {
+      if (stopTimeoutMs <= 0) {
+        cancelSource();
+        return;
+      }
+      if (stopTimeoutMs > MAX_TIMEOUT_MS) return;
+      cancelTimer = setTimeout(cancelSource, stopTimeoutMs);
     };
     abortController.signal.addEventListener(`abort`, onAbort, { once: true });
 
@@ -183,6 +218,7 @@ export function createResumableStream<CHUNK>(options: CreateResumableStreamOptio
      */
     async function finish() {
       finished = true;
+      clearTimeout(cancelTimer);
       abortController.signal.removeEventListener(`abort`, onAbort);
       const remove = unsubscribe;
       unsubscribe = undefined;
