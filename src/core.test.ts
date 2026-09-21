@@ -143,6 +143,146 @@ describe(`startStream`, () => {
     expect(abortController.signal.aborted).toBe(false);
   });
 
+  test(`should drain the chunks a source emits while ending after a stop`, async () => {
+    // Arrange
+    let onStop!: () => void;
+    const abortController = new AbortController();
+    const adapter = createAdapter({
+      onStopRequested: async (options) => {
+        onStop = options.onStop;
+        return () => {};
+      },
+    });
+    const context = createResumableStream({ adapter, codec });
+
+    /** Reports the stop asynchronously, the way a producer reacts to its signal. */
+    const source = new ReadableStream<string>({
+      start(controller) {
+        controller.enqueue(`a`);
+        abortController.signal.addEventListener(`abort`, () => {
+          setTimeout(() => {
+            controller.enqueue(`abort`);
+            controller.close();
+          }, 10);
+        });
+      },
+    });
+    const { stream } = await context.startStream(source, { abortController });
+    await vi.waitFor(() => expect(onStop).toBeDefined());
+
+    // Act
+    onStop();
+    const received = await collect(stream);
+
+    // Assert
+    expect(received).toEqual([`a`, `abort`]);
+  });
+
+  test(`should cancel a source that ignores the stop once the stop timeout ends`, async () => {
+    // Arrange
+    let onStop!: () => void;
+    const cancel = vi.fn();
+    const adapter = createAdapter({
+      onStopRequested: async (options) => {
+        onStop = options.onStop;
+        return () => {};
+      },
+    });
+    const context = createResumableStream({ adapter, codec });
+    const source = new ReadableStream<string>({
+      start(controller) {
+        controller.enqueue(`a`);
+      },
+      cancel,
+    });
+    const { stream } = await context.startStream(source, {
+      abortController: new AbortController(),
+      stopTimeoutMs: 20,
+    });
+    await vi.waitFor(() => expect(onStop).toBeDefined());
+
+    // Act
+    onStop();
+    const received = await collect(stream);
+
+    // Assert
+    expect(received).toEqual([`a`]);
+    expect(cancel.mock.calls.length).toBe(1);
+  });
+
+  test(`should not cancel the source when the stop timeout is Infinity`, async () => {
+    // Arrange
+    let onStop!: () => void;
+    const abortController = new AbortController();
+    const adapter = createAdapter({
+      onStopRequested: async (options) => {
+        onStop = options.onStop;
+        return () => {};
+      },
+    });
+    const context = createResumableStream({ adapter, codec });
+    const source = new ReadableStream<string>({
+      start(controller) {
+        controller.enqueue(`a`);
+        abortController.signal.addEventListener(`abort`, () => {
+          setTimeout(() => {
+            controller.enqueue(`abort`);
+            controller.close();
+          }, 20);
+        });
+      },
+    });
+    const { stream } = await context.startStream(source, {
+      abortController,
+      stopTimeoutMs: Infinity,
+    });
+    await vi.waitFor(() => expect(onStop).toBeDefined());
+
+    // Act
+    onStop();
+    const received = await collect(stream);
+
+    // Assert
+    expect(received).toEqual([`a`, `abort`]);
+  });
+
+  test(`should cancel the source immediately when the stop timeout is zero`, async () => {
+    // Arrange
+    let onStop!: () => void;
+    const abortController = new AbortController();
+    const adapter = createAdapter({
+      onStopRequested: async (options) => {
+        onStop = options.onStop;
+        return () => {};
+      },
+    });
+    const context = createResumableStream({ adapter, codec });
+    let cancelled = false;
+    const source = new ReadableStream<string>({
+      start(controller) {
+        controller.enqueue(`a`);
+        abortController.signal.addEventListener(`abort`, () => {
+          setTimeout(() => {
+            if (!cancelled) controller.enqueue(`abort`);
+          }, 10);
+        });
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const { stream } = await context.startStream(source, { abortController, stopTimeoutMs: 0 });
+    await vi.waitFor(() => expect(onStop).toBeDefined());
+
+    // Act
+    onStop();
+    const received = await collect(stream);
+
+    // Assert
+    expect(received).toEqual([`a`]);
+    expect(cancelled).toBe(true);
+  });
+
   test(`should pass the generation id to the stop subscription`, async () => {
     // Arrange
     const onStopRequested = vi.fn(async () => () => {});
