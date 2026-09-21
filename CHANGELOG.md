@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.0](https://github.com/zirkelc/ai-resumable-stream/compare/v3.1.0...v3.2.0) (2026-09-21)
+
+
+### Features
+
+* let a stop drain the source so onFinish reports isAborted ([#19](https://github.com/zirkelc/ai-resumable-stream/issues/19)) ([7afb9f6](https://github.com/zirkelc/ai-resumable-stream/commit/7afb9f61d48f02fdfa86f7a9b841a3fb0371aad6))
+
 ## [3.1.0](https://github.com/zirkelc/ai-resumable-stream/compare/v3.0.0...v3.1.0) (2026-09-18)
 
 
