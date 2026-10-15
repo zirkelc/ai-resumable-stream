@@ -42,6 +42,20 @@ export function createControlledSource() {
   };
 }
 
+/**
+ * A source that emits its chunks and then fails on the next read. The error is raised from
+ * `pull`, because erroring a stream drops the chunks still queued in it.
+ */
+export function createFailingSource(chunks: Array<UIMessageChunk>, error: Error) {
+  let index = 0;
+  return new ReadableStream<UIMessageChunk>({
+    pull(controller) {
+      if (index < chunks.length) controller.enqueue(chunks[index++]!);
+      else controller.error(error);
+    },
+  });
+}
+
 export async function collect(
   stream: AsyncIterable<UIMessageChunk>,
 ): Promise<Array<UIMessageChunk>> {
@@ -402,6 +416,85 @@ export function defineConformanceTests(harness: Harness) {
 
         // Assert
         expect(await collected).toEqual([newerChunk]);
+      });
+    });
+
+    describe(`failed source`, () => {
+      test(`should pass the source error to the client that started it`, async () => {
+        // Arrange
+        const context = await createContext();
+        const chunk = UIChunks.textStart({ id: `1` });
+        const error = new Error(`source failed`);
+        const received: Array<UIMessageChunk> = [];
+
+        // Act
+        const { stream } = await context.startStream(createFailingSource([chunk], error), {
+          streamId: `stream-20`,
+        });
+        const result = (async () => {
+          for await (const value of stream) received.push(value);
+        })();
+
+        // Assert
+        await expect(result).rejects.toThrow();
+        expect(received).toEqual([chunk]);
+      });
+
+      test(`should return null when resuming a stream whose source failed`, async () => {
+        // Arrange
+        const context = await createContext();
+        const { stream } = await context.startStream(
+          createFailingSource([UIChunks.textStart({ id: `1` })], new Error(`source failed`)),
+          { streamId: `stream-21` },
+        );
+        await collect(stream).catch(() => {
+          /** The client is told about the failure, the resumer is not */
+        });
+
+        // Act
+        const resumed = await vi.waitFor(
+          async () => {
+            const candidate = await context.resumeStream({ streamId: `stream-21` });
+            expect(candidate).toBeNull();
+            return candidate;
+          },
+          { timeout: 5_000 },
+        );
+
+        // Assert
+        expect(resumed).toBeNull();
+      });
+
+      test(`should end a resumed stream cleanly when the source fails`, async () => {
+        // Arrange
+        const context = await createContext();
+        const produced = UIChunks.textStart({ id: `1` });
+        let controller!: ReadableStreamDefaultController<UIMessageChunk>;
+        const source = new ReadableStream<UIMessageChunk>({
+          start(streamController) {
+            controller = streamController;
+            controller.enqueue(produced);
+          },
+        });
+        const { stream } = await context.startStream(source, { streamId: `stream-22` });
+        const started = collect(stream).catch(() => []);
+
+        const resumed = await vi.waitFor(
+          async () => {
+            const candidate = await context.resumeStream({ streamId: `stream-22` });
+            expect(candidate).not.toBeNull();
+            return candidate!;
+          },
+          { timeout: 5_000 },
+        );
+
+        // Act
+        const collected = collect(resumed);
+        controller.error(new Error(`source failed`));
+        await started;
+
+        // Assert
+        expect(await collected).toEqual([produced]);
       });
     });
 
