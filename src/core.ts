@@ -119,6 +119,13 @@ export type CreateResumableStreamOptions<CHUNK> = {
 const MAX_TIMEOUT_MS = 2_147_483_647;
 
 /**
+ * The queue size at which the client stream asks for no more chunks. Set explicitly
+ * because it also tells whether chunks are still queued: the desired size is below it
+ * exactly while the queue holds a chunk.
+ */
+const CLIENT_HIGH_WATER_MARK = 1;
+
+/**
  * Ignores teardown failures so they never mask the original outcome.
  */
 async function ignoreErrors(fn: () => unknown): Promise<void> {
@@ -159,14 +166,33 @@ export function createResumableStream<CHUNK>(options: CreateResumableStreamOptio
      */
     let clientCancelled = false;
     let clientController!: ReadableStreamDefaultController<CHUNK>;
-    const clientStream = new ReadableStream<CHUNK>({
-      start(controller) {
-        clientController = controller;
+
+    /**
+     * A source failure held back until the client has read the chunks before it, because
+     * erroring a stream discards the chunks still queued in it. Reported on the next pull,
+     * which only happens once the queue is empty.
+     */
+    let pendingError: { error: unknown } | undefined;
+    const failClient = (error: unknown) => {
+      const queued = (clientController.desiredSize ?? 0) < CLIENT_HIGH_WATER_MARK;
+      if (queued) pendingError = { error };
+      else clientController.error(error);
+    };
+
+    const clientStream = new ReadableStream<CHUNK>(
+      {
+        start(controller) {
+          clientController = controller;
+        },
+        pull(controller) {
+          if (pendingError) controller.error(pendingError.error);
+        },
+        cancel() {
+          clientCancelled = true;
+        },
       },
-      cancel() {
-        clientCancelled = true;
-      },
-    });
+      { highWaterMark: CLIENT_HIGH_WATER_MARK },
+    );
 
     /**
      * Serialized chunks for the adapter.
@@ -271,12 +297,27 @@ export function createResumableStream<CHUNK>(options: CreateResumableStreamOptio
           if (!clientCancelled) clientController.enqueue(value);
         }
       } catch (error) {
-        adapterController.error(error);
-        if (!clientCancelled) clientController.error(error);
+        /**
+         * Only the client that started the stream is told about the failure. The adapter
+         * sees a clean end, so it marks the generation finished exactly as it does for a
+         * completed or stopped one: a resumer gets the chunks produced so far, and nothing
+         * once the generation is over, instead of a generation left marked as running.
+         * Adapters rely on this: one that hands its chunks to a library which cannot handle
+         * a failed stream would otherwise leave an unhandled rejection, which ends a Node
+         * process.
+         */
+        if (!clientCancelled) failClient(error);
       } finally {
         reader.releaseLock();
-        await finish();
+
+        /**
+         * The adapter is told the stream is over before the stop listener is removed, so
+         * a store that is slow to unsubscribe cannot keep the generation marked running.
+         * Stops are ignored from here on, because the source has ended.
+         */
+        const finishing = finish();
         await ignoreErrors(() => adapterController.close());
+        await finishing;
         await ignoreErrors(() => onFinish?.());
       }
     })();

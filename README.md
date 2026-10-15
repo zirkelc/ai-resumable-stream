@@ -200,9 +200,11 @@ The result is `null` in three cases. The library does not tell you which case ap
 
 - no stream was started with that id
 - the stream has already completed
-- the producer died or was stopped before the stream completed
+- the source stream failed, the producer died, or the stream was stopped before it completed
 
-If your application must know whether a stream completed or was cut off, store that information together with the message.
+If the source stream fails, only the client that started the stream receives the error. A client that resumes while the stream is running receives the chunks produced before the failure, and then its stream ends without an error. After that, a resume returns `null`, the same as for a completed stream.
+
+If your application must know whether a stream completed, failed or was cut off, store that information together with the message.
 
 ### `stopStream`
 
@@ -356,7 +358,7 @@ const adapter: StreamAdapter = {
 };
 ```
 
-- **`createStream`** is called when a stream starts. It receives the stream id, the generation id and a `ReadableStream<string>` of encoded chunks. First, it discards any state left over from an earlier stream with the same id, so a reused id never replays old chunks. Then it makes `generationId` the current generation of the stream id and consumes the chunks in the background until the stream ends. The returned promise resolves as soon as the stream can be resumed, not when it is complete.
+- **`createStream`** is called when a stream starts. It receives the stream id, the generation id and a `ReadableStream<string>` of encoded chunks. First, it discards any state left over from an earlier stream with the same id, so a reused id never replays old chunks. Then it makes `generationId` the current generation of the stream id and consumes the chunks in the background until the stream ends. The chunks stream also ends without an error when the source stream fails. The returned promise resolves as soon as the stream can be resumed, not when it is complete.
 - **`resumeStream`** is called when a client reconnects. It returns every chunk produced so far, in the original order, and then continues with the new chunks until the stream ends. With a `generationId`, it resumes that generation. Without one, it resumes the current generation of the stream id. It returns `null` when the id is unknown, the stream has already finished, or its data has expired.
 - **`requestStop`** is called by the process that wants to stop a stream. With a `generationId`, it stops that generation. Without one, it stops the current generation of the stream id. It must not fail when the stream is unknown or already finished, and it should store the request if the generation does not listen yet.
 - **`onStopRequested`** is called by the producing process when a stream starts. It registers a listener for one generation that calls `onStop` when a stop signal arrives. If a stop request was stored before the listener was registered, the listener also calls `onStop` for that request. It returns a function that removes only this listener.
@@ -373,6 +375,7 @@ The tests in [`src/__tests__/conformance-suite.ts`](./src/__tests__/conformance-
 - a stop also ends the stream of a client that resumed
 - a stop with a generation id only stops that generation, also when it was requested before that generation started
 - an older generation can be resumed while a newer generation is current
+- when the source stream fails, a client that resumed receives the chunks produced before the failure and then a clean end, and a later resume returns `null`
 
 ## Advanced
 

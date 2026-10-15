@@ -70,6 +70,9 @@ const STOP_TTL_SECONDS = 60 * 60;
 
 /**
  * Raised by `resumable-stream` when a producer stops answering resume requests.
+ *
+ * TODO(#21): the timer that raises it can end without settling the resume, so a resume
+ * of a dead producer can wait forever instead of failing with this message.
  */
 const ACK_TIMEOUT_MESSAGE = `Timeout waiting for ack`;
 
@@ -180,6 +183,11 @@ export function createRedisAdapter(options: CreateRedisAdapterOptions): StreamAd
        * The pointer is dropped as soon as the source ends, so a resume that arrives
        * during teardown is told there is nothing to resume rather than racing it. The
        * stop goes with it: a generation that is over has nothing left to stop.
+       *
+       * `chunks` ends cleanly also when the source fails. This matters here, because
+       * `resumable-stream` reads its source without a rejection handler: a failed stream
+       * would be an unhandled rejection, which ends a Node process, and the generation
+       * would never be marked done.
        */
       const sse = chunks.pipeThrough(chunksToSSE()).pipeThrough(
         new TransformStream<string, string>({
@@ -209,7 +217,20 @@ export function createRedisAdapter(options: CreateRedisAdapterOptions): StreamAd
         runId === undefined ? await readPointer(streamId) : generationName(streamId, runId);
       if (!generationId) return null;
 
-      const sse = await createContext().resumeExistingStream(generationId);
+      /**
+       * A producer that died without marking its generation done never answers, and
+       * `resumable-stream` rejects after waiting for it. There is nothing to resume.
+       *
+       * TODO(#21): bound this call with a time limit of our own, because the upstream
+       * timeout does not always settle.
+       */
+      let sse: ReadableStream<string> | null | undefined;
+      try {
+        sse = await createContext().resumeExistingStream(generationId);
+      } catch (error) {
+        if (isAckTimeout(error)) return null;
+        throw error;
+      }
       if (!sse) return null;
 
       const reader = sse.pipeThrough(sseToChunks()).getReader();

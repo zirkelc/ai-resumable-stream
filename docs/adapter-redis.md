@@ -92,6 +92,10 @@ A resume without a generation id reads the pointer and resumes the generation th
 
 A resume with a generation id does not read the pointer. It requests that generation directly. This also works after a newer generation has started, as long as the producer of the requested generation is alive.
 
+If the source stream fails, the adapter ends the generation the same way as a completed one. It deletes the pointer and the stop key, and it marks the stream as done. A later resume returns `null`.
+
+If the producer process died before it could clean up, the pointer still names the generation, but no process answers the resume request. `resumable-stream` waits 1 second for an answer, and then the resume returns `null`. Until the pointer expires, each resume of that stream id waits this 1 second. A producer that is alive but needs more than 1 second to answer is also reported as `null`.
+
 ### Stop
 
 Each generation has its own pub/sub channel for stop requests. When a stream starts, the producer subscribes to the channel of its generation. When a message arrives, the producer aborts its controller. It does not matter which process published the message. Because each generation has its own channel, the end of one generation does not remove the listener of a different generation on the shared subscriber connection.

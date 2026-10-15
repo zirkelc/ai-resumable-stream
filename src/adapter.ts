@@ -7,7 +7,8 @@
 export type StreamAdapter = {
   /**
    * Discards any state left over from a previous stream with the same id, registers
-   * the id, and begins consuming `chunks` in the background.
+   * the id, and begins consuming `chunks` in the background. `chunks` ends cleanly
+   * also when the source fails: a failed stream is over like a completed one.
    *
    * Resolves once the stream is registered and resumable, not once it is complete.
    * A stream id may be reused, so implementations must not replay stale chunks.

@@ -315,6 +315,95 @@ describe(`startStream`, () => {
     expect(typeof generationId).toBe(`string`);
     expect(generationId.length > 0).toBe(true);
   });
+
+  test(`should end the adapter chunks cleanly when the source fails`, async () => {
+    // Arrange
+    let adapterChunks!: Promise<Array<string>>;
+    const adapter = createAdapter({
+      createStream: async ({ chunks }) => {
+        adapterChunks = collect(chunks as unknown as AsyncIterable<string>);
+      },
+    });
+    const context = createResumableStream({ adapter, codec });
+    let sent = false;
+    const source = new ReadableStream<string>({
+      pull(controller) {
+        if (sent) {
+          controller.error(new Error(`source failed`));
+          return;
+        }
+        sent = true;
+        controller.enqueue(`a`);
+      },
+    });
+
+    // Act
+    const { stream } = await context.startStream(source);
+    const client = collect(stream);
+
+    // Assert
+    await expect(client).rejects.toThrow();
+    expect(await adapterChunks).toEqual([`a`]);
+  });
+
+  test(`should give a slow client every chunk before the source error`, async () => {
+    // Arrange
+    const finished = createDeferred<void>();
+    const context = createResumableStream({ adapter: createAdapter(), codec });
+    const source = new ReadableStream<string>({
+      start(controller) {
+        controller.enqueue(`a`);
+        controller.enqueue(`b`);
+      },
+      pull(controller) {
+        if (controller.desiredSize !== null && controller.desiredSize > 0) {
+          controller.error(new Error(`source failed`));
+        }
+      },
+    });
+    const { stream } = await context.startStream(source, { onFinish: finished.resolve });
+    const received: Array<string> = [];
+
+    // Act
+    await finished.promise;
+    const client = (async () => {
+      for await (const chunk of stream) received.push(chunk);
+    })();
+
+    // Assert
+    await expect(client).rejects.toThrow();
+    expect(received).toEqual([`a`, `b`]);
+  });
+
+  test(`should end the adapter chunks while the stop listener is still being removed`, async () => {
+    // Arrange
+    let adapterChunks!: Promise<Array<string>>;
+    const onStopRequested = vi.fn(async () => () => new Promise<void>(() => {}));
+    const adapter = createAdapter({
+      createStream: async ({ chunks }) => {
+        adapterChunks = collect(chunks as unknown as AsyncIterable<string>);
+      },
+      onStopRequested,
+    });
+    const context = createResumableStream({ adapter, codec });
+    let close!: () => void;
+    const source = new ReadableStream<string>({
+      start(controller) {
+        controller.enqueue(`a`);
+        close = () => controller.close();
+      },
+    });
+    const { stream } = await context.startStream(source);
+    await vi.waitFor(() => expect(onStopRequested.mock.calls.length).toBe(1));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Act
+    close();
+    await collect(stream);
+
+    // Assert
+    expect(await adapterChunks).toEqual([`a`]);
+  });
 });
 
 describe(`resumeStream`, () => {
