@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.1](https://github.com/zirkelc/ai-resumable-stream/compare/v3.2.0...v3.2.1) (2026-10-15)
+
+
+### Bug Fixes
+
+* end the stream cleanly when the source errors ([#22](https://github.com/zirkelc/ai-resumable-stream/issues/22)) ([eee7ea9](https://github.com/zirkelc/ai-resumable-stream/commit/eee7ea9a093ff5732e7c204129f8524225de1ede))
+
 ## [3.2.0](https://github.com/zirkelc/ai-resumable-stream/compare/v3.1.0...v3.2.0) (2026-09-21)
 
 
