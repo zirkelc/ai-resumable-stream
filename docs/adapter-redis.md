@@ -65,15 +65,17 @@ pnpm example:redis
 
 ## Options
 
-| Option       | Type          | Required | Description                                                                                               |
-| ------------ | ------------- | -------- | --------------------------------------------------------------------------------------------------------- |
-| `publisher`  | `RedisClient` | Yes      | Client that sends commands and publishes messages                                                         |
-| `subscriber` | `RedisClient` | Yes      | Client for subscriptions. Must be a separate client, because a subscribed connection cannot send commands |
-| `keyPrefix`  | `string`      | No       | Prefix for all keys and channels. Defaults to `ai-resumable-stream`                                       |
+| Option         | Type          | Required | Description                                                                                                |
+| -------------- | ------------- | -------- | ---------------------------------------------------------------------------------------------------------- |
+| `publisher`    | `RedisClient` | Yes      | Client that sends commands and publishes messages                                                          |
+| `subscriber`   | `RedisClient` | Yes      | Client for subscriptions. Must be a separate client, because a subscribed connection cannot send commands  |
+| `keyPrefix`    | `string`      | No       | Prefix for all keys and channels. Defaults to `ai-resumable-stream`                                        |
+| `ackTimeoutMs` | `number`      | No       | How long a resume waits for the producer to answer before it returns `null`. Defaults to `1000`            |
+| `ttlSeconds`   | `number`      | No       | How long a stream stays resumable. Must be longer than your longest stream. Defaults to `86400` (24 hours) |
 
 ## How it works
 
-This adapter is built on [`resumable-stream`](https://github.com/vercel/resumable-stream). Redis does not store the chunks. The chunks stay in the memory of the producing process. When a client resumes, the producer sends the chunks to it over pub/sub. Redis only transports messages and stores a few small keys per stream. You do not need to configure chunk retention.
+This adapter uses a runtime derived from [`resumable-stream`](https://github.com/vercel/resumable-stream). The runtime is part of this package and fixes bugs of the original that can crash the process. See [redis-runtime.md](./redis-runtime.md) for what is different and why. Redis does not store the chunks. The chunks stay in the memory of the producing process. When a client resumes, the producer sends the chunks to it over pub/sub. Redis only transports messages and stores a few small keys per stream. You do not need to configure chunk retention.
 
 > [!IMPORTANT]
 > **A stream is only resumable while its producer is alive.**
@@ -84,7 +86,7 @@ Each stream id has a pointer key that contains the id of the current generation.
 
 When the source stream of a generation ends, the generation deletes the pointer immediately, but only if the pointer still points to that generation. An old generation therefore cannot delete the pointer of a newer generation. A resume request that arrives while the generation shuts down returns `null`.
 
-The pointer expires after 24 hours. If a producer dies without cleanup, the key does not stay in Redis for longer than that.
+The pointer expires after `ttlSeconds` (24 hours by default). If a producer dies without cleanup, the key does not stay in Redis for longer than that. The stream state of the runtime expires at the same time. Thus a stream is not resumable after `ttlSeconds`, also when its producer still runs. Set `ttlSeconds` longer than your longest stream.
 
 ### Resume
 
@@ -94,7 +96,9 @@ A resume with a generation id does not read the pointer. It requests that genera
 
 If the source stream fails, the adapter ends the generation the same way as a completed one. It deletes the pointer and the stop key, and it marks the stream as done. A later resume returns `null`.
 
-If the producer process died before it could clean up, the pointer still names the generation, but no process answers the resume request. `resumable-stream` waits 1 second for an answer, and then the resume returns `null`. Until the pointer expires, each resume of that stream id waits this 1 second. A producer that is alive but needs more than 1 second to answer is also reported as `null`.
+If the producer process died before it could clean up, the pointer still names the generation, but no process answers the resume request. The resume waits `ackTimeoutMs` (1 second by default) for an answer, and then returns `null`. Until the pointer expires after `ttlSeconds`, each resume of that stream id waits this long. The resume also returns `null` for a producer that is alive but answers too late. Increase `ackTimeoutMs` if your producers are busy or your network is slow.
+
+If Redis drops the connections while a producer ends its stream, the producer cannot mark the stream as done. The process does not crash, because the producer catches each failed command. The adapter usually deletes the pointer before that, so a later resume returns `null` at once. A resume with an explicit generation id waits `ackTimeoutMs` and then returns `null`.
 
 ### Stop
 
@@ -107,7 +111,7 @@ Pub/sub does not store messages. A stop request that is published before the pro
 
 In both orders, the producer gets the stop request, from the subscription or from the key.
 
-A stop request without a generation id is stored for the generation that the pointer points to at that time. If there is no current generation, nothing is stored.
+The adapter stores a stop request without a generation id for the generation that the pointer points to at that time. If there is no current generation, the adapter stores nothing.
 
 When a generation ends, it deletes its stop key together with the pointer. A stop request therefore does not stay in Redis after its generation has ended. The one hour expiry only applies to a stop request for a generation that never started, or for a generation whose producer died before cleanup.
 

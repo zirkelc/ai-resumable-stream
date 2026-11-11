@@ -15,8 +15,8 @@ import { createRedisAdapter } from "./index.js";
  * versions still satisfy the structural client type: at compile time via the
  * conformance checks below, and at runtime by driving every Redis command the adapter
  * relies on (`isOpen`, `connect`, `get`/`set`/`del`/`eval` for the generation pointer and its
- * stop key,
- * `set`/`incr` through resumable-stream, `subscribe`, `unsubscribe`, and `publish`).
+ * stop key, `get`/`set` for the sentinel of the runtime, `subscribe`, `unsubscribe`, and
+ * `publish`).
  */
 type Options = Parameters<typeof createRedisAdapter>[0];
 type RedisClient = Options[`publisher`] & Options[`subscriber`];

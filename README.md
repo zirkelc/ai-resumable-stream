@@ -135,10 +135,10 @@ async function sendMessage(chatId: string, messages: UIMessage[]) {
 | ------------------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `streamId`                | `string`                      | Id of the stream. Use it to resume or stop the stream. Defaults to a generated id, returned as `streamId`                                                         |
 | `generationId`            | `string`                      | Id of this generation. Use it to resume or stop only this generation. Must be unique within the stream id. Defaults to a generated id, returned as `generationId` |
-| `abortController`         | `AbortController`             | Aborted when the stream is stopped. Created by the library if you do not pass one                                                                                 |
+| `abortController`         | `AbortController`             | The library aborts it when the stream stops, and creates one if you do not pass one                                                                               |
 | `stopTimeoutMs`           | `number`                      | Time that a stop waits for the source to end before it cancels the source. Defaults to `1000` with a supplied `abortController`, `0` without one                  |
 | `onStopSubscriptionError` | `(error: unknown) => void`    | Called when the subscription to stop requests fails. The stream continues, but it cannot be stopped                                                               |
-| `onFinish`                | `() => void \| Promise<void>` | Called after the source stream has ended, also after an error or a stop. Errors thrown by the callback are ignored                                                |
+| `onFinish`                | `() => void \| Promise<void>` | Called after the source stream has ended, also after an error or a stop. The library ignores errors from the callback                                             |
 
 #### Abort controller
 
@@ -296,11 +296,13 @@ const context = createResumableUIMessageStream({
 });
 ```
 
-| Option       | Type          | Required | Description                                                                                               |
-| ------------ | ------------- | -------- | --------------------------------------------------------------------------------------------------------- |
-| `publisher`  | `RedisClient` | Yes      | Client that sends commands and publishes messages                                                         |
-| `subscriber` | `RedisClient` | Yes      | Client for subscriptions. Must be a separate client, because a subscribed connection cannot send commands |
-| `keyPrefix`  | `string`      | No       | Prefix for all keys and channels. Defaults to `ai-resumable-stream`                                       |
+| Option         | Type          | Required | Description                                                                                                |
+| -------------- | ------------- | -------- | ---------------------------------------------------------------------------------------------------------- |
+| `publisher`    | `RedisClient` | Yes      | Client that sends commands and publishes messages                                                          |
+| `subscriber`   | `RedisClient` | Yes      | Client for subscriptions. Must be a separate client, because a subscribed connection cannot send commands  |
+| `keyPrefix`    | `string`      | No       | Prefix for all keys and channels. Defaults to `ai-resumable-stream`                                        |
+| `ackTimeoutMs` | `number`      | No       | How long a resume waits for the producer to answer before it returns `null`. Defaults to `1000`            |
+| `ttlSeconds`   | `number`      | No       | How long a stream stays resumable. Must be longer than your longest stream. Defaults to `86400` (24 hours) |
 
 > [!IMPORTANT]
 > **A stream is only resumable while its producer is alive.**
@@ -358,10 +360,10 @@ const adapter: StreamAdapter = {
 };
 ```
 
-- **`createStream`** is called when a stream starts. It receives the stream id, the generation id and a `ReadableStream<string>` of encoded chunks. First, it discards any state left over from an earlier stream with the same id, so a reused id never replays old chunks. Then it makes `generationId` the current generation of the stream id and consumes the chunks in the background until the stream ends. The chunks stream also ends without an error when the source stream fails. The returned promise resolves as soon as the stream can be resumed, not when it is complete.
-- **`resumeStream`** is called when a client reconnects. It returns every chunk produced so far, in the original order, and then continues with the new chunks until the stream ends. With a `generationId`, it resumes that generation. Without one, it resumes the current generation of the stream id. It returns `null` when the id is unknown, the stream has already finished, or its data has expired.
-- **`requestStop`** is called by the process that wants to stop a stream. With a `generationId`, it stops that generation. Without one, it stops the current generation of the stream id. It must not fail when the stream is unknown or already finished, and it should store the request if the generation does not listen yet.
-- **`onStopRequested`** is called by the producing process when a stream starts. It registers a listener for one generation that calls `onStop` when a stop signal arrives. If a stop request was stored before the listener was registered, the listener also calls `onStop` for that request. It returns a function that removes only this listener.
+- **`createStream`** runs when a stream starts. It receives the stream id, the generation id and a `ReadableStream<string>` of encoded chunks. First, it discards any state left over from an earlier stream with the same id, so a reused id never replays old chunks. Then it makes `generationId` the current generation of the stream id and consumes the chunks in the background until the stream ends. The chunks stream also ends without an error when the source stream fails. The returned promise resolves as soon as the stream can be resumed, not when it is complete.
+- **`resumeStream`** runs when a client reconnects. It returns every chunk produced so far, in the original order, and then continues with the new chunks until the stream ends. With a `generationId`, it resumes that generation. Without one, it resumes the current generation of the stream id. It returns `null` when the id is unknown, the stream has already finished, or its data has expired.
+- **`requestStop`** runs in the process that wants to stop a stream. With a `generationId`, it stops that generation. Without one, it stops the current generation of the stream id. It must not fail when the stream is unknown or already finished, and it should store the request if the generation does not listen yet.
+- **`onStopRequested`** runs in the producing process when a stream starts. It registers a listener for one generation that calls `onStop` when a stop signal arrives. If a stop request was stored before the listener was registered, the listener also calls `onStop` for that request. It returns a function that removes only this listener.
 
 The adapter must treat the chunks as opaque strings. If your store needs a special format, for example escaping or a length prefix, the adapter adds it on write and removes it on read.
 
@@ -389,7 +391,7 @@ import { createResumableUIMessageStream } from "ai-resumable-stream/ai-sdk";
 const context = createResumableUIMessageStream({ adapter });
 ```
 
-This is the same as `createResumableStream({ adapter, codec: uiMessageChunkCodec })`. The codec validates each chunk when it is read. An invalid chunk, for example one written by an older version of your application, is dropped and does not fail the resume.
+This is the same as `createResumableStream({ adapter, codec: uiMessageChunkCodec })`. The codec validates each chunk when the library reads it. The codec drops an invalid chunk, for example one that an older version of your application wrote, and the resume does not fail.
 
 For other chunk types, pass your own `StreamCodec`:
 
@@ -418,7 +420,7 @@ const context = createResumableUIMessageStream({ adapter, waitUntil });
 
 ### Finish
 
-The `onFinish` callback is invoked after the source stream has ended and the adapter stream was closed. Use it for cleanup tasks like removing the active stream ID from the database. Errors thrown by `onFinish` are caught and ignored.
+The library calls `onFinish` after the source stream has ended and the adapter stream has closed. Use it for cleanup, for example to remove the active stream id from the database. The library catches and ignores errors from `onFinish`.
 
 ```typescript
 const { stream } = await context.startStream(toUIMessageStream({ stream: result.stream }), {
@@ -501,7 +503,7 @@ export const appRouter = router({
 });
 ```
 
-## API Reference
+## API reference
 
 ### `createResumableStream`
 

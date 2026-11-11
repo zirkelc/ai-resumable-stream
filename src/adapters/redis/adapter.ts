@@ -1,4 +1,4 @@
-import { createResumableStreamContext, type Publisher, type Subscriber } from "resumable-stream";
+import { AckTimeoutError, createRuntime } from "./runtime/runtime.js";
 import type { StreamAdapter } from "../../adapter.js";
 import { chunksToSSE, sseToChunks } from "./sse.js";
 
@@ -8,26 +8,27 @@ import { chunksToSSE, sseToChunks } from "./sse.js";
  * `RedisClientType` are not mutually assignable across redis v5 and v6, so a nominal
  * type would pin consumers to one of them.
  *
- * `get` and `set` are redeclared because the pointer is a string with an expiry, which is
- * narrower than what `resumable-stream` describes for its own use. `unsubscribe` is
- * redeclared because a listener removes itself alone, never every listener of its channel.
+ * `unsubscribe` takes the listener because a listener removes itself alone, never every
+ * listener of its channel.
  */
-type Redis = Omit<Publisher, `get` | `set`> &
-  Omit<Subscriber, `unsubscribe`> & {
-    isOpen: boolean;
-    get(key: string): Promise<string | null>;
-    set(
-      key: string,
-      value: string,
-      options?: { expiration?: { type: `EX`; value: number } },
-    ): Promise<unknown>;
-    unsubscribe(channel: string, listener?: (message: string) => void): Promise<unknown>;
-    del(key: string): Promise<unknown>;
-    eval(
-      script: string,
-      options?: { keys?: Array<string>; arguments?: Array<string> },
-    ): Promise<unknown>;
-  };
+type Redis = {
+  isOpen: boolean;
+  connect(): Promise<unknown>;
+  publish(channel: string, message: string): Promise<unknown>;
+  subscribe(channel: string, listener: (message: string) => void): Promise<unknown>;
+  unsubscribe(channel: string, listener?: (message: string) => void): Promise<unknown>;
+  get(key: string): Promise<string | null>;
+  set(
+    key: string,
+    value: string,
+    options?: { expiration?: { type: `EX`; value: number } },
+  ): Promise<unknown>;
+  del(key: string): Promise<unknown>;
+  eval(
+    script: string,
+    options?: { keys?: Array<string>; arguments?: Array<string> },
+  ): Promise<unknown>;
+};
 
 export type CreateRedisAdapterOptions = {
   /**
@@ -43,17 +44,28 @@ export type CreateRedisAdapterOptions = {
    * Namespace for every key and channel this adapter touches.
    */
   keyPrefix?: string;
+  /**
+   * How long a resume waits for the producer to answer before it gives up and returns
+   * `null`. A producer that died never answers, so every resume of its stream waits this
+   * long. A producer that is alive but busy can need more than the default. Defaults to
+   * 1000 ms.
+   */
+  ackTimeoutMs?: number;
+  /**
+   * How long a stream stays resumable, in seconds. Must be longer than your longest
+   * stream, because a resume finds nothing after this time, even while the producer still
+   * runs. A shorter value ends sooner the wait of each resume for a producer that died.
+   * Defaults to 24 hours.
+   */
+  ttlSeconds?: number;
 };
 
 const DEFAULT_KEY_PREFIX = `ai-resumable-stream`;
 
 /**
- * Matches the lifetime `resumable-stream` gives its own keys. The pointer is deleted as
- * soon as the source ends, so this only bounds the leak from a producer that died before
- * it could clean up. There is nothing to gain from expiring sooner than the stream state
- * it points at.
+ * The fixed lifetime of the original `resumable-stream`, long enough for any chat turn.
  */
-const GENERATION_TTL_SECONDS = 24 * 60 * 60;
+const DEFAULT_TTL_SECONDS = 24 * 60 * 60;
 
 /**
  * Deletes a key only while it still holds the expected value. One script, so no other
@@ -69,27 +81,20 @@ const DELETE_IF_EQUAL_SCRIPT = `if redis.call("GET", KEYS[1]) == ARGV[1] then re
 const STOP_TTL_SECONDS = 60 * 60;
 
 /**
- * Raised by `resumable-stream` when a producer stops answering resume requests.
- *
- * TODO(#21): the timer that raises it can end without settling the resume, so a resume
- * of a dead producer can wait forever instead of failing with this message.
- */
-const ACK_TIMEOUT_MESSAGE = `Timeout waiting for ack`;
-
-function isAckTimeout(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.includes(ACK_TIMEOUT_MESSAGE);
-}
-
-/**
- * Stores streams in Redis via `resumable-stream`.
+ * Stores streams in Redis, with a runtime derived from `resumable-stream`.
  *
  * Chunks live in the memory of the producing process and reach late subscribers over
  * Redis pub/sub, so a stream is only resumable while its producer is alive. Use a
  * durable adapter when a stream must outlive the process that started it.
  */
 export function createRedisAdapter(options: CreateRedisAdapterOptions): StreamAdapter {
-  const { publisher, subscriber, keyPrefix = DEFAULT_KEY_PREFIX } = options;
+  const {
+    publisher,
+    subscriber,
+    keyPrefix = DEFAULT_KEY_PREFIX,
+    ackTimeoutMs,
+    ttlSeconds = DEFAULT_TTL_SECONDS,
+  } = options;
 
   /**
    * The name of one generation of a stream id. The generation id is encoded, so it holds
@@ -132,11 +137,13 @@ export function createRedisAdapter(options: CreateRedisAdapterOptions): StreamAd
   }
 
   function createContext(waitUntil?: (promise: Promise<unknown>) => void) {
-    return createResumableStreamContext({
-      waitUntil: waitUntil ?? null,
+    return createRuntime({
+      waitUntil,
       publisher,
       subscriber,
       keyPrefix,
+      ackTimeoutMs,
+      ttlSeconds,
     });
   }
 
@@ -169,25 +176,26 @@ export function createRedisAdapter(options: CreateRedisAdapterOptions): StreamAd
       await connect();
 
       /**
-       * The pointer holds the full name, which is also the id `resumable-stream` knows
+       * The pointer holds the full name, which is also the id the runtime knows
        * the generation by, so two stream ids with the same generation id never share
        * state.
        */
       const generationId = generationName(streamId, runId);
 
+      /**
+       * The pointer lives as long as the sentinel of the runtime. The adapter deletes it
+       * when the source ends, so the expiry only removes the pointer of a producer that
+       * died before it could clean up. A pointer that lives longer than its sentinel only
+       * leads to a stream that the runtime does not know.
+       */
       await publisher.set(pointerKey(streamId), generationId, {
-        expiration: { type: `EX`, value: GENERATION_TTL_SECONDS },
+        expiration: { type: `EX`, value: ttlSeconds },
       });
 
       /**
        * The pointer is dropped as soon as the source ends, so a resume that arrives
        * during teardown is told there is nothing to resume rather than racing it. The
        * stop goes with it: a generation that is over has nothing left to stop.
-       *
-       * `chunks` ends cleanly also when the source fails. This matters here, because
-       * `resumable-stream` reads its source without a rejection handler: a failed stream
-       * would be an unhandled rejection, which ends a Node process, and the generation
-       * would never be marked done.
        */
       const sse = chunks.pipeThrough(chunksToSSE()).pipeThrough(
         new TransformStream<string, string>({
@@ -211,24 +219,21 @@ export function createRedisAdapter(options: CreateRedisAdapterOptions): StreamAd
       /**
        * A named generation is followed without the pointer, so it can be resumed after a
        * newer generation took the stream id. Whether its producer is still alive is then only
-       * known from `resumable-stream` itself.
+       * known from the runtime itself.
        */
       const generationId =
         runId === undefined ? await readPointer(streamId) : generationName(streamId, runId);
       if (!generationId) return null;
 
       /**
-       * A producer that died without marking its generation done never answers, and
-       * `resumable-stream` rejects after waiting for it. There is nothing to resume.
-       *
-       * TODO(#21): bound this call with a time limit of our own, because the upstream
-       * timeout does not always settle.
+       * A producer that died without marking its generation done never answers, and the
+       * runtime rejects after waiting for it. There is nothing to resume.
        */
       let sse: ReadableStream<string> | null | undefined;
       try {
         sse = await createContext().resumeExistingStream(generationId);
       } catch (error) {
-        if (isAckTimeout(error)) return null;
+        if (error instanceof AckTimeoutError) return null;
         throw error;
       }
       if (!sse) return null;
@@ -247,7 +252,7 @@ export function createRedisAdapter(options: CreateRedisAdapterOptions): StreamAd
         first = await reader.read();
       } catch (error) {
         reader.releaseLock();
-        if (isAckTimeout(error)) return null;
+        if (error instanceof AckTimeoutError) return null;
         throw error;
       }
 

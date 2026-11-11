@@ -55,7 +55,7 @@ describe(`chunksToSSE`, () => {
 
 describe(`sseToChunks`, () => {
   /**
-   * `resumable-stream` concatenates every chunk it has seen and re-slices the result
+   * The runtime concatenates every chunk it has seen and re-slices the result
    * at an arbitrary offset, so chunk boundaries never survive the transport.
    */
   test.each([1, 3, 7, 64, 100_000])(
@@ -87,7 +87,7 @@ describe(`sseToChunks`, () => {
     expect(recovered.length).toBe(0);
   });
 
-  test(`should ignore the sentinel resumable-stream publishes on completion`, async () => {
+  test(`should ignore the sentinel the runtime publishes on completion`, async () => {
     // Arrange
     const doneMessage = `\n\n\nDONE_SENTINEL_hasdfasudfyge374%$%^$EDSATRTYFtydryrte\n`;
     const sse = (await encode(chunks)).join(``);
