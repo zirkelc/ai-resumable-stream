@@ -452,6 +452,23 @@ describe(`redis adapter commandTimeoutMs`, () => {
     await proxy.dropped;
   });
 
+  test(`should name the error TimeoutError, as AbortSignal.timeout does`, async () => {
+    // Arrange
+    const { publisher, subscriber } = await createHangingClients(
+      /SET\r\n\$\d+\r\n[^\r]*:stop:chat-11:turn-1\r\n/,
+    );
+    const adapter = createRedisAdapter({ publisher, subscriber, commandTimeoutMs: 100 });
+
+    // Act
+    const error: unknown = await adapter
+      .requestStop({ streamId: `chat-11`, generationId: `turn-1` })
+      .catch((reason: unknown) => reason);
+
+    // Assert
+    expect(error).toBeInstanceOf(CommandTimeoutError);
+    expect((error as Error).name).toBe(`TimeoutError`);
+  });
+
   test(`should reject a stop with a CommandTimeoutError when Redis stops answering`, async () => {
     // Arrange
     const { publisher, subscriber, proxy } = await createHangingClients(
@@ -466,5 +483,51 @@ describe(`redis adapter commandTimeoutMs`, () => {
     // Assert
     await expect(result).rejects.toBeInstanceOf(CommandTimeoutError);
     await proxy.dropped;
+  });
+});
+
+describe(`redis adapter heartbeatMs`, () => {
+  test(`should renew the running state at the configured cadence`, async () => {
+    // Arrange
+    const { publisher, subscriber } = createClients();
+    const adapter = createRedisAdapter({ publisher, subscriber, heartbeatMs: 100 });
+    const context = createResumableStream({ adapter, codec, waitUntil });
+    let source!: ReadableStreamDefaultController<string>;
+    const { stream } = await context.startStream(
+      new ReadableStream<string>({
+        start(controller) {
+          source = controller;
+        },
+      }),
+      { streamId: `chat-12`, generationId: `turn-1` },
+    );
+    const drained = stream.pipeTo(new WritableStream());
+    onTestFinished(async () => {
+      source.close();
+      await drained;
+    });
+    const sentinelKey = `ai-resumable-stream:rs:sentinel:chat-12:turn-1`;
+
+    // Act
+    /** Twice the lifetime of the running state without a renewal */
+    await sleep(600);
+    const state = await publisher.get(sentinelKey);
+    const remainingMs = await publisher.pTTL(sentinelKey);
+
+    // Assert
+    expect(state).toBe(`1`);
+    /** Three intervals, so the 24 hour default never applied */
+    expect(remainingMs > 0 && remainingMs <= 300).toBe(true);
+  });
+
+  test(`should reject a heartbeatMs that is not greater than 0`, () => {
+    // Arrange
+    const { publisher, subscriber } = createClients();
+
+    // Act
+    const create = () => createRedisAdapter({ publisher, subscriber, heartbeatMs: 0 });
+
+    // Assert
+    expect(create).toThrow(RangeError);
   });
 });

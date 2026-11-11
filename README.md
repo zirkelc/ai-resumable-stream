@@ -307,14 +307,15 @@ const context = createResumableUIMessageStream({
 });
 ```
 
-| Option             | Type          | Required | Description                                                                                                         |
-| ------------------ | ------------- | -------- | ------------------------------------------------------------------------------------------------------------------- |
-| `publisher`        | `RedisClient` | Yes      | Client that sends commands and publishes messages                                                                   |
-| `subscriber`       | `RedisClient` | Yes      | Client for subscriptions. Must be a separate client, because a subscribed connection cannot send commands           |
-| `keyPrefix`        | `string`      | No       | Prefix for all keys and channels. Defaults to `ai-resumable-stream`                                                 |
-| `ackTimeoutMs`     | `number`      | No       | How long a resume waits for the producer to answer before it returns `null`. Defaults to `1000`                     |
-| `expireAfterMs`    | `number`      | No       | When the pointer of a stream id expires. Must be longer than your longest stream. Defaults to `86400000` (24 hours) |
-| `commandTimeoutMs` | `number`      | No       | How long a call waits for Redis before it rejects with a `CommandTimeoutError`. Defaults to no limit                |
+| Option             | Type          | Required | Description                                                                                                                                                                                                     |
+| ------------------ | ------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `publisher`        | `RedisClient` | Yes      | Client that sends commands and publishes messages                                                                                                                                                               |
+| `subscriber`       | `RedisClient` | Yes      | Client for subscriptions. Must be a separate client, because a subscribed connection cannot send commands                                                                                                       |
+| `keyPrefix`        | `string`      | No       | Prefix for all keys and channels. Defaults to `ai-resumable-stream`                                                                                                                                             |
+| `ackTimeoutMs`     | `number`      | No       | How long a resume waits for the producer to answer before it returns `null`. Defaults to `1000`                                                                                                                 |
+| `expireAfterMs`    | `number`      | No       | When the pointer of a stream id expires. Must be longer than your longest stream. Defaults to `86400000` (24 hours)                                                                                             |
+| `commandTimeoutMs` | `number`      | No       | How long a call waits for Redis before it rejects with a `CommandTimeoutError` (its `name` is `TimeoutError`). Defaults to no limit                                                                             |
+| `heartbeatMs`      | `number`      | No       | How often a producer renews the mark that its stream is running. The mark expires after three intervals, so a dead producer is detected after three intervals. Defaults to `30000` (30 s, detection after 90 s) |
 
 > [!IMPORTANT]
 > **A stream is only resumable while its producer is alive.**

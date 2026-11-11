@@ -74,15 +74,27 @@ export type CreateRedisAdapterOptions = {
    * Defaults to no limit.
    */
   commandTimeoutMs?: number;
+  /**
+   * How often a producer renews the mark that its stream is running. The mark expires
+   * after three intervals without a renewal, so the stream of a producer that died is
+   * gone after three intervals. Each renewal is one Redis command per running stream.
+   * Defaults to 30 s, so a dead producer is detected after 90 s.
+   */
+  heartbeatMs?: number;
 };
 
 /**
  * Raised when Redis does not answer a call of the adapter within `commandTimeoutMs`.
+ *
+ * Its name is `TimeoutError`, the name of the error that `AbortSignal.timeout()` gives, so
+ * a check of `error.name === "TimeoutError"` finds both. A plain `Error` and not a
+ * `DOMException`, because a `DOMException` takes its name only from its constructor, and a
+ * subclass of it is unusual.
  */
 export class CommandTimeoutError extends Error {
   constructor(timeoutMs: number) {
     super(`Redis did not answer within ${timeoutMs} ms`);
-    this.name = `CommandTimeoutError`;
+    this.name = `TimeoutError`;
   }
 }
 
@@ -121,7 +133,11 @@ export function createRedisAdapter(options: CreateRedisAdapterOptions): StreamAd
     ackTimeoutMs,
     ttlSeconds,
     commandTimeoutMs,
+    heartbeatMs,
   } = options;
+  if (heartbeatMs !== undefined && !(heartbeatMs > 0)) {
+    throw new RangeError(`heartbeatMs must be greater than 0, got ${heartbeatMs}`);
+  }
   const expireAfterMs =
     options.expireAfterMs ??
     (ttlSeconds === undefined ? DEFAULT_EXPIRE_AFTER_MS : ttlSeconds * 1_000);
@@ -199,6 +215,7 @@ export function createRedisAdapter(options: CreateRedisAdapterOptions): StreamAd
       keyPrefix,
       ackTimeoutMs,
       expireAfterMs,
+      heartbeatIntervalMs: heartbeatMs,
     });
   }
 
