@@ -317,9 +317,6 @@ const context = createResumableUIMessageStream({
 | `commandTimeoutMs` | `number`      | No       | How long a call waits for Redis before it rejects with a `CommandTimeoutError` (its `name` is `TimeoutError`). Defaults to no limit                                                                             |
 | `heartbeatMs`      | `number`      | No       | How often a producer renews the mark that its stream is running. The mark expires after three intervals, so a dead producer is detected after three intervals. Defaults to `30000` (30 s, detection after 90 s) |
 
-> [!NOTE]
-> Each renewal of `heartbeatMs` is one Redis command per running stream. A faster cadence detects a dead producer sooner, but sends more commands. Depending on your Redis provider, for example one that bills per command, this can cost more. With the default of 30 s, 1,000 running streams send about 33 commands per second.
-
 > [!IMPORTANT]
 > **A stream is only resumable while its producer is alive.**
 
