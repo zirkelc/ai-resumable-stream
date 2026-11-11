@@ -15,7 +15,7 @@ You create the `S3Client`, so you control the credentials, the region and the re
 
 ```ts
 import { S3Client } from "@aws-sdk/client-s3";
-import { streamText, toUIMessageStream, type UIMessage } from "ai";
+import { createUIMessageStreamResponse, streamText, toUIMessageStream, type UIMessage } from "ai";
 import { createS3ExpressAdapter } from "ai-resumable-stream/adapters/s3-express";
 import { createResumableUIMessageStream } from "ai-resumable-stream/ai-sdk";
 
@@ -41,14 +41,15 @@ export async function send(chatId: string, messages: Array<UIMessage>) {
     abortController,
   });
 
-  return stream;
+  return createUIMessageStreamResponse({ stream });
 }
 
 // GET /chat/:chatId/stream
 export async function resume(chatId: string) {
   const stream = await context.resumeStream({ streamId: chatId });
+  if (!stream) return new Response(null, { status: 204 });
 
-  return stream ?? new Response(null, { status: 204 });
+  return createUIMessageStreamResponse({ stream });
 }
 
 // POST /chat/:chatId/stop

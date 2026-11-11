@@ -13,7 +13,7 @@ Both `redis` v5 and v6 are supported.
 The adapter requires two Redis clients, because a subscribed connection cannot send commands. The library connects the clients if they are not connected yet, but it never disconnects them. You manage the connection lifecycle in your application and can reuse the clients for all streams.
 
 ```ts
-import { streamText, toUIMessageStream, type UIMessage } from "ai";
+import { createUIMessageStreamResponse, streamText, toUIMessageStream, type UIMessage } from "ai";
 import { createClient } from "redis";
 import { createRedisAdapter } from "ai-resumable-stream/adapters/redis";
 import { createResumableUIMessageStream } from "ai-resumable-stream/ai-sdk";
@@ -41,14 +41,15 @@ export async function send(chatId: string, messages: Array<UIMessage>) {
     abortController,
   });
 
-  return stream;
+  return createUIMessageStreamResponse({ stream });
 }
 
 // GET /chat/:chatId/stream
 export async function resume(chatId: string) {
   const stream = await context.resumeStream({ streamId: chatId });
+  if (!stream) return new Response(null, { status: 204 });
 
-  return stream ?? new Response(null, { status: 204 });
+  return createUIMessageStreamResponse({ stream });
 }
 
 // POST /chat/:chatId/stop
