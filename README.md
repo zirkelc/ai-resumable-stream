@@ -65,7 +65,7 @@ const context = createResumableUIMessageStream({
 Then use the context in your three routes:
 
 ```ts
-import { streamText, toUIMessageStream, type UIMessage } from "ai";
+import { createUIMessageStreamResponse, streamText, toUIMessageStream, type UIMessage } from "ai";
 
 // POST /chat/:chatId
 export async function send(chatId: string, messages: Array<UIMessage>) {
@@ -82,14 +82,15 @@ export async function send(chatId: string, messages: Array<UIMessage>) {
     abortController,
   });
 
-  return stream;
+  return createUIMessageStreamResponse({ stream });
 }
 
 // GET /chat/:chatId/stream
 export async function resume(chatId: string) {
   const stream = await context.resumeStream({ streamId: chatId });
+  if (!stream) return new Response(null, { status: 204 });
 
-  return stream ?? new Response(null, { status: 204 });
+  return createUIMessageStreamResponse({ stream });
 }
 
 // POST /chat/:chatId/stop
@@ -199,11 +200,14 @@ async function resumeMessage(chatId: string) {
 Pass the `signal` of the incoming request. If the client goes away, the resume ends at once and frees its resources, also while it still waits for the first chunk of the producer. The signal applies to the full resume, until the stream ends. Before `resumeStream` returns, the promise rejects with the reason of the signal. After that, the returned stream errors with it.
 
 ```ts
+import { createUIMessageStreamResponse } from "ai";
+
 // GET /chat/:chatId/stream
 export async function resume(chatId: string, request: Request) {
   const stream = await context.resumeStream({ streamId: chatId, signal: request.signal });
+  if (!stream) return new Response(null, { status: 204 });
 
-  return stream ?? new Response(null, { status: 204 });
+  return createUIMessageStreamResponse({ stream });
 }
 ```
 
