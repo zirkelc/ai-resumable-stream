@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.3.0](https://github.com/zirkelc/ai-resumable-stream/compare/v3.2.1...v3.3.0) (2026-11-11)
+
+
+### Features
+
+* replace resumable-stream with a runtime that cannot crash the process ([#24](https://github.com/zirkelc/ai-resumable-stream/issues/24)) ([731eb1b](https://github.com/zirkelc/ai-resumable-stream/commit/731eb1b18dc639e6ded552510639a2de8419c985))
+
 ## [3.2.1](https://github.com/zirkelc/ai-resumable-stream/compare/v3.2.0...v3.2.1) (2026-10-15)
 
 
