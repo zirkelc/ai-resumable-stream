@@ -495,6 +495,7 @@ export function createStreamAdapter(
              */
             if (Date.now() - lastProgressAt >= deadAfterMs) {
               const head = await s3.head(cursor.key);
+              // TODO(#26): error the stream here instead of closing it, as the Redis adapter will
               if (!head || isStale(head, deadAfterMs)) {
                 controller.close();
                 return;

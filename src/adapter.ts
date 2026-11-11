@@ -42,6 +42,12 @@ export type StreamAdapter = {
   resumeStream(options: {
     streamId: string;
     generationId?: string;
+    /**
+     * Aborts when the caller gives up on the resume. The caller enforces it already: it
+     * stops waiting, and it cancels the stream when the adapter returns it later. An
+     * adapter can also use it to free a subscription or a wait sooner.
+     */
+    signal?: AbortSignal;
   }): Promise<ReadableStream<string> | null>;
   /**
    * Signals the process that owns a generation of the stream to stop producing.

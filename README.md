@@ -196,6 +196,17 @@ async function resumeMessage(chatId: string) {
 }
 ```
 
+Pass the `signal` of the incoming request. If the client goes away, the resume ends at once and frees its resources, also while it still waits for the first chunk of the producer. The signal applies to the full resume, until the stream ends. Before `resumeStream` returns, the promise rejects with the reason of the signal. After that, the returned stream errors with it.
+
+```ts
+// GET /chat/:chatId/stream
+export async function resume(chatId: string, request: Request) {
+  const stream = await context.resumeStream({ streamId: chatId, signal: request.signal });
+
+  return stream ?? new Response(null, { status: 204 });
+}
+```
+
 The result is `null` in three cases. The library does not tell you which case applies:
 
 - no stream was started with that id
@@ -296,13 +307,14 @@ const context = createResumableUIMessageStream({
 });
 ```
 
-| Option         | Type          | Required | Description                                                                                                |
-| -------------- | ------------- | -------- | ---------------------------------------------------------------------------------------------------------- |
-| `publisher`    | `RedisClient` | Yes      | Client that sends commands and publishes messages                                                          |
-| `subscriber`   | `RedisClient` | Yes      | Client for subscriptions. Must be a separate client, because a subscribed connection cannot send commands  |
-| `keyPrefix`    | `string`      | No       | Prefix for all keys and channels. Defaults to `ai-resumable-stream`                                        |
-| `ackTimeoutMs` | `number`      | No       | How long a resume waits for the producer to answer before it returns `null`. Defaults to `1000`            |
-| `ttlSeconds`   | `number`      | No       | How long a stream stays resumable. Must be longer than your longest stream. Defaults to `86400` (24 hours) |
+| Option             | Type          | Required | Description                                                                                                         |
+| ------------------ | ------------- | -------- | ------------------------------------------------------------------------------------------------------------------- |
+| `publisher`        | `RedisClient` | Yes      | Client that sends commands and publishes messages                                                                   |
+| `subscriber`       | `RedisClient` | Yes      | Client for subscriptions. Must be a separate client, because a subscribed connection cannot send commands           |
+| `keyPrefix`        | `string`      | No       | Prefix for all keys and channels. Defaults to `ai-resumable-stream`                                                 |
+| `ackTimeoutMs`     | `number`      | No       | How long a resume waits for the producer to answer before it returns `null`. Defaults to `1000`                     |
+| `expireAfterMs`    | `number`      | No       | When the pointer of a stream id expires. Must be longer than your longest stream. Defaults to `86400000` (24 hours) |
+| `commandTimeoutMs` | `number`      | No       | How long a call waits for Redis before it rejects with a `CommandTimeoutError`. Defaults to no limit                |
 
 > [!IMPORTANT]
 > **A stream is only resumable while its producer is alive.**
@@ -361,7 +373,7 @@ const adapter: StreamAdapter = {
 ```
 
 - **`createStream`** runs when a stream starts. It receives the stream id, the generation id and a `ReadableStream<string>` of encoded chunks. First, it discards any state left over from an earlier stream with the same id, so a reused id never replays old chunks. Then it makes `generationId` the current generation of the stream id and consumes the chunks in the background until the stream ends. The chunks stream also ends without an error when the source stream fails. The returned promise resolves as soon as the stream can be resumed, not when it is complete.
-- **`resumeStream`** runs when a client reconnects. It returns every chunk produced so far, in the original order, and then continues with the new chunks until the stream ends. With a `generationId`, it resumes that generation. Without one, it resumes the current generation of the stream id. It returns `null` when the id is unknown, the stream has already finished, or its data has expired.
+- **`resumeStream`** runs when a client reconnects. It returns every chunk produced so far, in the original order, and then continues with the new chunks until the stream ends. With a `generationId`, it resumes that generation. Without one, it resumes the current generation of the stream id. It returns `null` when the id is unknown, the stream has already finished, or its data has expired. The library cancels the returned stream when the `signal` of the caller aborts. An adapter can also use `signal` to free a subscription or a wait sooner.
 - **`requestStop`** runs in the process that wants to stop a stream. With a `generationId`, it stops that generation. Without one, it stops the current generation of the stream id. It must not fail when the stream is unknown or already finished, and it should store the request if the generation does not listen yet.
 - **`onStopRequested`** runs in the producing process when a stream starts. It registers a listener for one generation that calls `onStop` when a stop signal arrives. If a stop request was stored before the listener was registered, the listener also calls `onStop` for that request. It returns a function that removes only this listener.
 
@@ -416,6 +428,20 @@ The library continues to store chunks after the response has been sent. On serve
 import { waitUntil } from "@vercel/functions";
 
 const context = createResumableUIMessageStream({ adapter, waitUntil });
+```
+
+The library gives `waitUntil` a promise for each task that runs after the response: reading the source, the teardown of the adapter, and the stop listener. None of these promises rejects. If you close your store clients, for example the Redis clients, collect the promises and wait for them first. Otherwise the teardown can fail and leave the stream marked as running:
+
+```ts
+const pending: Array<Promise<unknown>> = [];
+const context = createResumableUIMessageStream({
+  adapter,
+  waitUntil: (promise) => pending.push(promise),
+});
+
+// Before shutdown
+await Promise.all(pending);
+await Promise.all([publisher.quit(), subscriber.quit()]);
 ```
 
 ### Finish
@@ -542,6 +568,7 @@ type StartStreamResult<CHUNK> = {
 type ResumeStreamOptions = {
   streamId: string;
   generationId?: string;
+  signal?: AbortSignal;
 };
 
 type StopStreamOptions = {
@@ -554,7 +581,7 @@ type StopStreamOptions = {
 | ------------ | -------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `adapter`    | `StreamAdapter`      | Yes      | Stores the chunks and transports stop requests                                                                                                               |
 | `codec`      | `StreamCodec<CHUNK>` | Yes      | Converts chunks to strings for the adapter, and back                                                                                                         |
-| `waitUntil`  | `(promise) => void`  | No       | Keeps the process alive until all chunks are stored. Only needed on serverless runtimes                                                                      |
+| `waitUntil`  | `(promise) => void`  | No       | Receives a promise for each task after the response. Keeps a serverless function alive, and lets you wait before you close the clients                       |
 | `generateId` | `() => string`       | No       | Generates the stream id and the generation id when you do not pass them to `startStream`. Must return a new id on each call. Defaults to `crypto.randomUUID` |
 
 ### `createResumableUIMessageStream`
@@ -580,6 +607,7 @@ type StreamAdapter = {
   resumeStream(options: {
     streamId: string;
     generationId?: string;
+    signal?: AbortSignal;
   }): Promise<ReadableStream<string> | null>;
   requestStop(options: { streamId: string; generationId?: string }): Promise<void>;
   onStopRequested(options: {

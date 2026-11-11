@@ -21,7 +21,7 @@ type Redis = {
   set(
     key: string,
     value: string,
-    options?: { expiration?: { type: `EX`; value: number } },
+    options?: { expiration?: { type: `EX` | `PX`; value: number } },
   ): Promise<unknown>;
   del(key: string): Promise<unknown>;
   eval(
@@ -52,20 +52,46 @@ export type CreateRedisAdapterOptions = {
    */
   ackTimeoutMs?: number;
   /**
-   * How long a stream stays resumable, in seconds. Must be longer than your longest
-   * stream, because a resume finds nothing after this time, even while the producer still
-   * runs. A shorter value ends sooner the wait of each resume for a producer that died.
-   * Defaults to 24 hours.
+   * When the Redis keys of a stream expire, in milliseconds: the pointer of the stream id
+   * and the mark of a finished stream. Must be longer than your longest stream, because a
+   * resume without a generation id finds nothing after the pointer expired, even while the
+   * producer still runs. The stream of a producer that died is gone sooner, because its
+   * producer no longer renews it. Defaults to 24 hours.
+   */
+  expireAfterMs?: number;
+  /**
+   * The same as `expireAfterMs`, in seconds. Ignored when `expireAfterMs` is set.
+   *
+   * @deprecated Use `expireAfterMs`.
    */
   ttlSeconds?: number;
+  /**
+   * How long the adapter waits for Redis when it connects, registers a stream, reads the
+   * pointer, or sends and listens for a stop. After this time, the call rejects with a
+   * `CommandTimeoutError`. Use it when Redis can become unreachable: the client does not
+   * get an answer from a dead peer, and the timeout and the abort signal of the client no
+   * longer apply once a command is written. The command can still be pending in the client.
+   * Defaults to no limit.
+   */
+  commandTimeoutMs?: number;
 };
+
+/**
+ * Raised when Redis does not answer a call of the adapter within `commandTimeoutMs`.
+ */
+export class CommandTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Redis did not answer within ${timeoutMs} ms`);
+    this.name = `CommandTimeoutError`;
+  }
+}
 
 const DEFAULT_KEY_PREFIX = `ai-resumable-stream`;
 
 /**
  * The fixed lifetime of the original `resumable-stream`, long enough for any chat turn.
  */
-const DEFAULT_TTL_SECONDS = 24 * 60 * 60;
+const DEFAULT_EXPIRE_AFTER_MS = 24 * 60 * 60 * 1_000;
 
 /**
  * Deletes a key only while it still holds the expected value. One script, so no other
@@ -93,8 +119,35 @@ export function createRedisAdapter(options: CreateRedisAdapterOptions): StreamAd
     subscriber,
     keyPrefix = DEFAULT_KEY_PREFIX,
     ackTimeoutMs,
-    ttlSeconds = DEFAULT_TTL_SECONDS,
+    ttlSeconds,
+    commandTimeoutMs,
   } = options;
+  const expireAfterMs =
+    options.expireAfterMs ??
+    (ttlSeconds === undefined ? DEFAULT_EXPIRE_AFTER_MS : ttlSeconds * 1_000);
+
+  /**
+   * Rejects with a `CommandTimeoutError` when the call takes longer than
+   * `commandTimeoutMs`. A late failure of the call is handled, so it is not an unhandled
+   * rejection.
+   */
+  function limit<VALUE>(call: Promise<VALUE>): Promise<VALUE> {
+    if (commandTimeoutMs === undefined) return call;
+    const timeoutMs = commandTimeoutMs;
+    return new Promise<VALUE>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new CommandTimeoutError(timeoutMs)), timeoutMs);
+      call.then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (error: unknown) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+    });
+  }
 
   /**
    * The name of one generation of a stream id. The generation id is encoded, so it holds
@@ -130,10 +183,12 @@ export function createRedisAdapter(options: CreateRedisAdapterOptions): StreamAd
   const pointerKey = (streamId: string) => `${keyPrefix}:generation:${streamId}`;
 
   async function connect() {
-    await Promise.all([
-      publisher.isOpen ? Promise.resolve() : publisher.connect(),
-      subscriber.isOpen ? Promise.resolve() : subscriber.connect(),
-    ]);
+    await limit(
+      Promise.all([
+        publisher.isOpen ? Promise.resolve() : publisher.connect(),
+        subscriber.isOpen ? Promise.resolve() : subscriber.connect(),
+      ]),
+    );
   }
 
   function createContext(waitUntil?: (promise: Promise<unknown>) => void) {
@@ -143,12 +198,12 @@ export function createRedisAdapter(options: CreateRedisAdapterOptions): StreamAd
       subscriber,
       keyPrefix,
       ackTimeoutMs,
-      ttlSeconds,
+      expireAfterMs,
     });
   }
 
   async function readPointer(streamId: string): Promise<string | null> {
-    return publisher.get(pointerKey(streamId));
+    return limit(publisher.get(pointerKey(streamId)));
   }
 
   /**
@@ -156,7 +211,7 @@ export function createRedisAdapter(options: CreateRedisAdapterOptions): StreamAd
    * generation it was meant for.
    */
   async function clearStop(streamId: string, generationId: string) {
-    await publisher.del(stopKey(streamId, generationId));
+    await limit(publisher.del(stopKey(streamId, generationId)));
   }
 
   /**
@@ -165,10 +220,12 @@ export function createRedisAdapter(options: CreateRedisAdapterOptions): StreamAd
    * successor may repoint the id at any moment, including between the two.
    */
   async function clearPointer(streamId: string, generationId: string) {
-    await publisher.eval(DELETE_IF_EQUAL_SCRIPT, {
-      keys: [pointerKey(streamId)],
-      arguments: [generationId],
-    });
+    await limit(
+      publisher.eval(DELETE_IF_EQUAL_SCRIPT, {
+        keys: [pointerKey(streamId)],
+        arguments: [generationId],
+      }),
+    );
   }
 
   return {
@@ -188,16 +245,19 @@ export function createRedisAdapter(options: CreateRedisAdapterOptions): StreamAd
        * died before it could clean up. A pointer that lives longer than its sentinel only
        * leads to a stream that the runtime does not know.
        */
-      await publisher.set(pointerKey(streamId), generationId, {
-        expiration: { type: `EX`, value: ttlSeconds },
-      });
+      await limit(
+        publisher.set(pointerKey(streamId), generationId, {
+          expiration: { type: `PX`, value: expireAfterMs },
+        }),
+      );
 
       /**
        * The pointer is dropped as soon as the source ends, so a resume that arrives
        * during teardown is told there is nothing to resume rather than racing it. The
        * stop goes with it: a generation that is over has nothing left to stop.
        */
-      const sse = chunks.pipeThrough(chunksToSSE()).pipeThrough(
+      const abandon = new AbortController();
+      const sse = chunks.pipeThrough(chunksToSSE(), { signal: abandon.signal }).pipeThrough(
         new TransformStream<string, string>({
           async flush() {
             await Promise.all([
@@ -210,10 +270,23 @@ export function createRedisAdapter(options: CreateRedisAdapterOptions): StreamAd
         }),
       );
 
-      await createContext(waitUntil).createNewResumableStream(generationId, () => sse);
+      /**
+       * A registration that times out is abandoned. The runtime can still finish its setup
+       * later, so the pipe is aborted: the runtime then sees a failed source and tears the
+       * stream down, and the source is cancelled.
+       */
+      try {
+        await limit(createContext(waitUntil).createNewResumableStream(generationId, () => sse));
+      } catch (error) {
+        abandon.abort(error);
+        await clearPointer(streamId, generationId).catch(() => {
+          /** It expires on its own */
+        });
+        throw error;
+      }
     },
 
-    async resumeStream({ streamId, generationId: runId }) {
+    async resumeStream({ streamId, generationId: runId, signal }) {
       await connect();
 
       /**
@@ -248,12 +321,22 @@ export function createRedisAdapter(options: CreateRedisAdapterOptions): StreamAd
        * not yet emitted anything waits for its first chunk.
        */
       let first: Awaited<ReturnType<typeof reader.read>>;
+      /**
+       * A producer that never sends its first chunk would hold this read, and with it the
+       * subscription, forever. The abort cancels the read, which removes the subscription.
+       */
+      const onAbort = () => void reader.cancel(signal?.reason).catch(() => undefined);
+      signal?.addEventListener(`abort`, onAbort, { once: true });
       try {
+        if (signal?.aborted) onAbort();
         first = await reader.read();
       } catch (error) {
         reader.releaseLock();
+        // TODO(#26): also map the error for a producer that died to null
         if (error instanceof AckTimeoutError) return null;
         throw error;
+      } finally {
+        signal?.removeEventListener(`abort`, onAbort);
       }
 
       if (first.done) {
@@ -297,10 +380,12 @@ export function createRedisAdapter(options: CreateRedisAdapterOptions): StreamAd
        * Kept before it is published. A producer subscribes before it reads, so it either
        * receives the message or finds the key.
        */
-      await publisher.set(stopKey(streamId, runId), `1`, {
-        expiration: { type: `EX`, value: STOP_TTL_SECONDS },
-      });
-      await publisher.publish(stopChannel(streamId, runId), `stop`);
+      await limit(
+        publisher.set(stopKey(streamId, runId), `1`, {
+          expiration: { type: `EX`, value: STOP_TTL_SECONDS },
+        }),
+      );
+      await limit(publisher.publish(stopChannel(streamId, runId), `stop`));
     },
 
     async onStopRequested({ streamId, generationId, onStop }) {
@@ -308,10 +393,10 @@ export function createRedisAdapter(options: CreateRedisAdapterOptions): StreamAd
 
       const channel = stopChannel(streamId, generationId);
       const listener = () => onStop();
-      await subscriber.subscribe(channel, listener);
+      await limit(subscriber.subscribe(channel, listener));
 
       const unsubscribe = async () => {
-        await subscriber.unsubscribe(channel, listener);
+        await limit(subscriber.unsubscribe(channel, listener));
       };
 
       /**
@@ -319,7 +404,7 @@ export function createRedisAdapter(options: CreateRedisAdapterOptions): StreamAd
        * which a stop is neither kept yet nor delivered.
        */
       try {
-        if ((await publisher.get(stopKey(streamId, generationId))) !== null) onStop();
+        if ((await limit(publisher.get(stopKey(streamId, generationId)))) !== null) onStop();
       } catch (error) {
         await unsubscribe().catch(() => {
           /** The subscription is gone with the connection */

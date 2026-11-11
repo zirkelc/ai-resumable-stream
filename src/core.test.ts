@@ -419,6 +419,120 @@ describe(`resumeStream`, () => {
     const input = resumeStream.mock.calls[0] as unknown;
     expect(input).toEqual([{ streamId: `chat`, generationId: `turn-1` }]);
   });
+
+  test(`should reject at once for a signal that has already aborted`, async () => {
+    // Arrange
+    const resumeStream = vi.fn(async () => null);
+    const context = createResumableStream({ adapter: createAdapter({ resumeStream }), codec });
+
+    // Act
+    const result = context.resumeStream({ streamId: `chat`, signal: AbortSignal.abort() });
+
+    // Assert
+    await expect(result).rejects.toThrow();
+    expect(resumeStream.mock.calls.length).toBe(0);
+  });
+
+  test(`should reject when the signal aborts before the adapter answers`, async () => {
+    // Arrange
+    const answer = createDeferred<ReadableStream<string> | null>();
+    const context = createResumableStream({
+      adapter: createAdapter({ resumeStream: () => answer.promise }),
+      codec,
+    });
+    const abortController = new AbortController();
+    const reason = new Error(`deadline`);
+
+    // Act
+    const result = context.resumeStream({ streamId: `chat`, signal: abortController.signal });
+    abortController.abort(reason);
+
+    // Assert
+    await expect(result).rejects.toBe(reason);
+  });
+
+  test(`should cancel a stream that the adapter returns after the abort`, async () => {
+    // Arrange
+    const answer = createDeferred<ReadableStream<string> | null>();
+    const cancelled = createDeferred<unknown>();
+    const context = createResumableStream({
+      adapter: createAdapter({ resumeStream: () => answer.promise }),
+      codec,
+    });
+    const abortController = new AbortController();
+    const reason = new Error(`deadline`);
+    const result = context.resumeStream({ streamId: `chat`, signal: abortController.signal });
+    abortController.abort(reason);
+    await result.catch(() => undefined);
+
+    // Act
+    answer.resolve(new ReadableStream<string>({ cancel: (why) => cancelled.resolve(why) }));
+
+    // Assert
+    expect(await cancelled.promise).toBe(reason);
+  });
+
+  test(`should error the resumed stream and cancel the adapter stream when the signal aborts`, async () => {
+    // Arrange
+    const cancelled = createDeferred<unknown>();
+    const context = createResumableStream({
+      adapter: createAdapter({
+        resumeStream: async () =>
+          new ReadableStream<string>({
+            start: (controller) => controller.enqueue(`a`),
+            cancel: (why) => cancelled.resolve(why),
+          }),
+      }),
+      codec,
+    });
+    const abortController = new AbortController();
+    const reason = new Error(`deadline`);
+    const stream = await context.resumeStream({
+      streamId: `chat`,
+      signal: abortController.signal,
+    });
+    const reader = stream!.getReader();
+    const first = await reader.read();
+
+    // Act
+    abortController.abort(reason);
+
+    // Assert
+    expect(first.value).toBe(`a`);
+    await expect(reader.read()).rejects.toBe(reason);
+    expect(await cancelled.promise).toBe(reason);
+  });
+});
+
+describe(`waitUntil`, () => {
+  test(`should cover the removal of a stop listener that registers after the source ended`, async () => {
+    // Arrange
+    const registered = createDeferred<() => Promise<void>>();
+    const removal = createDeferred<void>();
+    const pending: Array<Promise<unknown>> = [];
+    const context = createResumableStream({
+      adapter: createAdapter({ onStopRequested: () => registered.promise }),
+      codec,
+      waitUntil: (promise) => pending.push(promise),
+    });
+    const { stream } = await context.startStream(createSource([`a`]));
+    await collect(stream);
+    let isSettled = false;
+    const settled = Promise.all(pending).then(() => {
+      isSettled = true;
+    });
+
+    // Act
+    registered.resolve(() => removal.promise);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const settledBeforeRemoval = isSettled;
+    removal.resolve();
+    await settled;
+
+    // Assert
+    expect(settledBeforeRemoval).toBe(false);
+    expect(isSettled).toBe(true);
+  });
 });
 
 describe(`stopStream`, () => {

@@ -1,1 +1,5 @@
-export { type CreateRedisAdapterOptions, createRedisAdapter } from "./adapter.js";
+export {
+  CommandTimeoutError,
+  type CreateRedisAdapterOptions,
+  createRedisAdapter,
+} from "./adapter.js";

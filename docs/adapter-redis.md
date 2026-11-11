@@ -65,13 +65,22 @@ pnpm example:redis
 
 ## Options
 
-| Option         | Type          | Required | Description                                                                                                |
-| -------------- | ------------- | -------- | ---------------------------------------------------------------------------------------------------------- |
-| `publisher`    | `RedisClient` | Yes      | Client that sends commands and publishes messages                                                          |
-| `subscriber`   | `RedisClient` | Yes      | Client for subscriptions. Must be a separate client, because a subscribed connection cannot send commands  |
-| `keyPrefix`    | `string`      | No       | Prefix for all keys and channels. Defaults to `ai-resumable-stream`                                        |
-| `ackTimeoutMs` | `number`      | No       | How long a resume waits for the producer to answer before it returns `null`. Defaults to `1000`            |
-| `ttlSeconds`   | `number`      | No       | How long a stream stays resumable. Must be longer than your longest stream. Defaults to `86400` (24 hours) |
+| Option             | Type          | Required | Description                                                                                                         |
+| ------------------ | ------------- | -------- | ------------------------------------------------------------------------------------------------------------------- |
+| `publisher`        | `RedisClient` | Yes      | Client that sends commands and publishes messages                                                                   |
+| `subscriber`       | `RedisClient` | Yes      | Client for subscriptions. Must be a separate client, because a subscribed connection cannot send commands           |
+| `keyPrefix`        | `string`      | No       | Prefix for all keys and channels. Defaults to `ai-resumable-stream`                                                 |
+| `ackTimeoutMs`     | `number`      | No       | How long a resume waits for the producer to answer before it returns `null`. Defaults to `1000`                     |
+| `expireAfterMs`    | `number`      | No       | When the pointer of a stream id expires. Must be longer than your longest stream. Defaults to `86400000` (24 hours) |
+| `commandTimeoutMs` | `number`      | No       | How long a call waits for Redis before it rejects with a `CommandTimeoutError`. Defaults to no limit                |
+
+### Unreachable Redis
+
+node-redis does not get an answer from a peer that is gone without closing the connection, for example after a network failure. The command then waits until the socket closes, which can take minutes. The `timeout` option and the abort signal of a node-redis command no longer apply once the client has written the command.
+
+Set `commandTimeoutMs` to put a limit on the calls of the adapter: connect, the registration of a stream, the read of the pointer, and the calls for stop requests. After this time, the call rejects with a `CommandTimeoutError`, which `ai-resumable-stream/adapters/redis` exports. The command can still be pending in the client. A start that times out tears the stream down and cancels the source.
+
+To put a limit on a resume, pass a `signal` to `resumeStream`. The limit then also covers a producer that is alive but stuck.
 
 ## How it works
 
@@ -86,7 +95,7 @@ Each stream id has a pointer key that contains the id of the current generation.
 
 When the source stream of a generation ends, the generation deletes the pointer immediately, but only if the pointer still points to that generation. An old generation therefore cannot delete the pointer of a newer generation. A resume request that arrives while the generation shuts down returns `null`.
 
-The pointer expires after `ttlSeconds` (24 hours by default). If a producer dies without cleanup, the key does not stay in Redis for longer than that. The stream state of the runtime expires at the same time. Thus a stream is not resumable after `ttlSeconds`, also when its producer still runs. Set `ttlSeconds` longer than your longest stream.
+The pointer expires after `expireAfterMs` (24 hours by default). If a producer dies without cleanup, the key does not stay in Redis for longer than that. A resume without a generation id finds nothing after the pointer expired, also when its producer still runs. Set `expireAfterMs` longer than your longest stream.
 
 ### Resume
 
@@ -96,9 +105,9 @@ A resume with a generation id does not read the pointer. It requests that genera
 
 If the source stream fails, the adapter ends the generation the same way as a completed one. It deletes the pointer and the stop key, and it marks the stream as done. A later resume returns `null`.
 
-If the producer process died before it could clean up, the pointer still names the generation, but no process answers the resume request. The resume waits `ackTimeoutMs` (1 second by default) for an answer, and then returns `null`. Until the pointer expires after `ttlSeconds`, each resume of that stream id waits this long. The resume also returns `null` for a producer that is alive but answers too late. Increase `ackTimeoutMs` if your producers are busy or your network is slow.
+While a producer runs, it renews the running state of its stream every 30 seconds, and the state expires 90 seconds after the last renewal, so two renewals can fail before it expires. If the producer process died before it could clean up, the renewals stop. In the first 90 seconds, the pointer still names the generation, but no process answers the resume request. The resume then waits `ackTimeoutMs` (1 second by default) for an answer, and returns `null`. After that, the state is gone, and a resume returns `null` at once. A client that resumed before the producer died gets the end of its stream within about 110 seconds after the last renewal. The resume also returns `null` for a producer that is alive but answers too late. Increase `ackTimeoutMs` if your producers are busy or your network is slow.
 
-If Redis drops the connections while a producer ends its stream, the producer cannot mark the stream as done. The process does not crash, because the producer catches each failed command. The adapter usually deletes the pointer before that, so a later resume returns `null` at once. A resume with an explicit generation id waits `ackTimeoutMs` and then returns `null`.
+If Redis drops the connections while a producer ends its stream, the producer cannot mark the stream as done. The process does not crash, because the producer catches each failed command. The adapter usually deletes the pointer before that, so a later resume returns `null` at once. In the first 90 seconds, a resume with an explicit generation id waits `ackTimeoutMs` and then returns `null`. After that, the running state has expired, and the resume returns `null` at once.
 
 ### Stop
 
