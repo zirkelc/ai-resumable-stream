@@ -1,5 +1,5 @@
 /**
- * `resumable-stream` transports a stream of strings that it is free to concatenate and
+ * The runtime transports a stream of strings that it is free to concatenate and
  * re-slice, so chunks have to carry their own boundaries. SSE framing supplies them:
  * chunks are JSON, which never contains a raw newline, so a blank line always ends one.
  */

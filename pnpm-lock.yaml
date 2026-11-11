@@ -11,9 +11,6 @@ importers:
       ai-stream-utils:
         specifier: ^3.1.1
         version: 3.1.1(ai@7.0.22(zod@4.4.3))
-      resumable-stream:
-        specifier: ^2.2.12
-        version: 2.2.12
     devDependencies:
       '@ai-sdk/provider':
         specifier: ^4.0.3
@@ -2111,9 +2108,6 @@ packages:
     resolution: {integrity: sha512-oMA2dcrw6u0YfxJQXm342bFKX/E4sG9rbTzO9ptUcR/e8A33cHuvStiYOwH7fszkZlZ1z/ta9AAoPk2F4qIOHA==}
     engines: {node: '>=18'}
 
-  resumable-stream@2.2.12:
-    resolution: {integrity: sha512-e6boHekmb72MdWDn7vSV9kiuRb9K3CepcDj+3Z0NNhdAfld7uHbVU8+NKlHRf3LO2Chtj4cXuWL88StLg64eIw==}
-
   rfdc@1.4.1:
     resolution: {integrity: sha512-q1b3N5QkRUWUl7iyylaaj3kOpIT0N2i9MqIEQXP73GVsN9cw3fdx8X63cEmWhJGi2PPCF23Ijp7ktmd39rawIA==}
 
@@ -4102,8 +4096,6 @@ snapshots:
     dependencies:
       onetime: 7.0.0
       signal-exit: 4.1.0
-
-  resumable-stream@2.2.12: {}
 
   rfdc@1.4.1: {}
 
