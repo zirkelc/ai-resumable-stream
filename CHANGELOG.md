@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.4.0](https://github.com/zirkelc/ai-resumable-stream/compare/v3.3.0...v3.4.0) (2026-11-11)
+
+
+### Features
+
+* detect dead Redis producers and bound resumes and Redis calls ([#27](https://github.com/zirkelc/ai-resumable-stream/issues/27)) ([6c0d887](https://github.com/zirkelc/ai-resumable-stream/commit/6c0d8870b0c6d621cbdc80f3998e02a5710d4319))
+* name CommandTimeoutError TimeoutError and add the heartbeatMs option ([#29](https://github.com/zirkelc/ai-resumable-stream/issues/29)) ([baddca7](https://github.com/zirkelc/ai-resumable-stream/commit/baddca7a632bd6d91f21f51f2648a75c2cdeee73))
+
 ## [3.3.0](https://github.com/zirkelc/ai-resumable-stream/compare/v3.2.1...v3.3.0) (2026-11-11)
 
 
