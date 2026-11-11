@@ -1,6 +1,6 @@
 import { createClient } from "redis";
 import { RedisMemoryServer } from "redis-memory-server";
-import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, onTestFinished, test, vi } from "vitest";
 import {
   AckTimeoutError,
   createRuntime,
@@ -87,7 +87,9 @@ function createSubscriber(client: RedisClient, overrides: Partial<Subscriber> = 
  */
 async function setup(
   options: {
-    producer?: { publisher?: Partial<Publisher>; subscriber?: Partial<Subscriber> };
+    producer?: { publisher?: Partial<Publisher>; subscriber?: Partial<Subscriber> } & Partial<
+      Pick<CreateRuntimeOptions, `heartbeatIntervalMs`>
+    >;
     consumer?: { publisher?: Partial<Publisher>; subscriber?: Partial<Subscriber> } & Partial<
       Pick<CreateRuntimeOptions, `ackTimeoutMs` | `doneWatchdogIntervalMs`>
     >;
@@ -102,13 +104,14 @@ async function setup(
     publisher: createPublisher(clients.publisher, options.producer?.publisher),
     subscriber: createSubscriber(clients.subscriber, options.producer?.subscriber),
     waitUntil: (promise) => finished.push(promise),
-    ttlSeconds: 60,
+    expireAfterMs: 60_000,
+    heartbeatIntervalMs: options.producer?.heartbeatIntervalMs,
   });
   const consumer = createRuntime({
     keyPrefix,
     publisher: createPublisher(clients.publisher, options.consumer?.publisher),
     subscriber: createSubscriber(clients.subscriber, options.consumer?.subscriber),
-    ttlSeconds: 60,
+    expireAfterMs: 60_000,
     ackTimeoutMs: options.consumer?.ackTimeoutMs,
     doneWatchdogIntervalMs: options.consumer?.doneWatchdogIntervalMs,
   });
@@ -451,6 +454,81 @@ describe(`resumeExistingStream`, () => {
 
     // Assert
     expect(await readText(resumed!)).toBe(`a`);
+  });
+
+  test(`should keep the sentinel of a running stream alive with a heartbeat`, async () => {
+    // Arrange
+    const { producer, publisher, sentinelKey } = await setup({
+      producer: { heartbeatIntervalMs: 50 },
+    });
+    const source = createSource();
+    await producer.createNewResumableStream(`s1`, () => source.stream);
+    onTestFinished(() => source.controller.close());
+
+    // Act
+    /** Five times the lifetime of the sentinel without a renewal */
+    await sleep(750);
+
+    // Assert
+    expect(await publisher.get(sentinelKey(`s1`))).toBe(`1`);
+  });
+
+  test(`should let the stream of a producer that died expire`, async () => {
+    // Arrange
+    let dead = false;
+    const {
+      producer,
+      consumer,
+      publisher: client,
+      sentinelKey,
+    } = await setup({
+      producer: {
+        heartbeatIntervalMs: 50,
+        publisher: {
+          /** A process that died sends nothing more */
+          set: (key, value, options) =>
+            dead ? new Promise(() => {}) : client.set(key, value, options),
+          publish: (channel, message) =>
+            dead ? new Promise(() => {}) : client.publish(channel, message),
+        },
+      },
+      consumer: { doneWatchdogIntervalMs: 50 },
+    });
+    const source = createSource();
+    await producer.createNewResumableStream(`s1`, () => source.stream);
+    onTestFinished(() => source.controller.close());
+    source.controller.enqueue(`a`);
+    await sleep(20);
+    const attached = await consumer.resumeExistingStream(`s1`);
+
+    // Act
+    dead = true;
+    const text = await readText(attached!);
+    const later = await consumer.resumeExistingStream(`s1`);
+
+    // Assert
+    expect(text).toBe(`a`);
+    expect(await client.get(sentinelKey(`s1`))).toBeNull();
+    expect(later).toBeUndefined();
+  });
+
+  test(`should keep the DONE sentinel after the heartbeat stopped`, async () => {
+    // Arrange
+    const { producer, publisher, sentinelKey, finished } = await setup({
+      producer: { heartbeatIntervalMs: 50 },
+    });
+    const source = createSource();
+    const stream = await producer.createNewResumableStream(`s1`, () => source.stream);
+    await sleep(120);
+
+    // Act
+    source.controller.close();
+    await readText(stream);
+    await finished();
+    await sleep(200);
+
+    // Assert
+    expect(await publisher.get(sentinelKey(`s1`))).toBe(`DONE`);
   });
 
   /** https://github.com/vercel/resumable-stream/pull/47 */

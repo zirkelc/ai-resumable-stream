@@ -6,7 +6,7 @@ import { createClient as createClientV6 } from "redis-v6";
 import { afterAll, afterEach, beforeAll, describe, expect, onTestFinished, test, vi } from "vitest";
 import type { StreamCodec } from "../../adapter.js";
 import { createResumableStream } from "../../core.js";
-import { createRedisAdapter } from "./index.js";
+import { CommandTimeoutError, createRedisAdapter } from "./index.js";
 
 /**
  * The adapter against a real server and the real runtime, for the failures
@@ -72,6 +72,7 @@ type DroppableClient = Parameters<typeof createRedisAdapter>[0][`publisher`] & {
   isReady: boolean;
   on(event: `error`, listener: (error: Error) => void): unknown;
   quit(): Promise<unknown>;
+  destroy(): void;
 };
 
 /**
@@ -82,8 +83,11 @@ type DroppableClient = Parameters<typeof createRedisAdapter>[0][`publisher`] & {
  * The sockets close with a FIN, as when a managed server drops its clients. The client
  * then fails the commands in flight with "Socket closed unexpectedly". A hard reset would
  * give ECONNRESET instead. The proxy drops once, so the clients can reconnect after.
+ *
+ * With `hang`, the proxy keeps the connections open but forwards nothing more from the
+ * client, as when the peer is gone without a FIN. The client then never gets an answer.
  */
-async function createDroppingProxy({ dropOn }: { dropOn: RegExp }) {
+async function createDroppingProxy({ dropOn, hang = false }: { dropOn: RegExp; hang?: boolean }) {
   const sockets = new Set<Socket>();
   let armed = true;
   let onDropped!: () => void;
@@ -106,10 +110,11 @@ async function createDroppingProxy({ dropOn }: { dropOn: RegExp }) {
     /** Commands can arrive split across reads, so the match runs on the recent bytes */
     let recent = ``;
     client.on(`data`, (data) => {
+      if (hang && !armed) return;
       recent = (recent + data.toString(`latin1`)).slice(-1_024);
       if (armed && dropOn.test(recent)) {
         armed = false;
-        for (const socket of sockets) socket.end();
+        if (!hang) for (const socket of sockets) socket.end();
         onDropped();
         return;
       }
@@ -243,11 +248,51 @@ describe(`redis adapter with a failed source`, () => {
   });
 });
 
-describe(`redis adapter ttlSeconds`, () => {
-  test(`should forget a stream after ttlSeconds, even while its producer runs`, async () => {
+describe(`redis adapter resume with a signal`, () => {
+  test(`should end the wait for the first chunk and unsubscribe when the signal aborts`, async () => {
     // Arrange
     const { publisher, subscriber } = createClients();
-    const adapter = createRedisAdapter({ publisher, subscriber, ttlSeconds: 1 });
+    const keyPrefix = `signal-${crypto.randomUUID()}`;
+    const adapter = createRedisAdapter({ publisher, subscriber, keyPrefix });
+    const context = createResumableStream({ adapter, codec, waitUntil });
+    let source!: ReadableStreamDefaultController<string>;
+    const { stream } = await context.startStream(
+      new ReadableStream<string>({
+        start(controller) {
+          source = controller;
+        },
+      }),
+      { streamId: `chat-7`, generationId: `turn-1` },
+    );
+    const drained = stream.pipeTo(new WritableStream());
+    onTestFinished(async () => {
+      source.close();
+      await drained;
+    });
+    const chunkChannels = () =>
+      publisher.sendCommand([`PUBSUB`, `CHANNELS`, `${keyPrefix}:rs:chunk:*`]) as Promise<
+        Array<string>
+      >;
+
+    // Act
+    const result = context.resumeStream({
+      streamId: `chat-7`,
+      signal: AbortSignal.timeout(200),
+    });
+
+    // Assert
+    await expect(result).rejects.toThrow();
+    await vi.waitFor(async () => {
+      expect((await chunkChannels()).length).toBe(0);
+    });
+  });
+});
+
+describe(`redis adapter expireAfterMs`, () => {
+  test(`should forget the pointer after expireAfterMs, even while its producer runs`, async () => {
+    // Arrange
+    const { publisher, subscriber } = createClients();
+    const adapter = createRedisAdapter({ publisher, subscriber, expireAfterMs: 1_000 });
     const context = createResumableStream({ adapter, codec, waitUntil });
     let source!: ReadableStreamDefaultController<string>;
     const { stream } = await context.startStream(
@@ -275,7 +320,35 @@ describe(`redis adapter ttlSeconds`, () => {
     /** The pointer expired, so the resume does not wait for an answer */
     expect(performance.now() - start).toBeLessThan(500);
     expect(await publisher.get(`ai-resumable-stream:generation:chat-6`)).toBeNull();
-    expect(await publisher.get(`ai-resumable-stream:rs:sentinel:chat-6:turn-1`)).toBeNull();
+    /** The producer is alive, so its heartbeat keeps the running state */
+    expect(await publisher.get(`ai-resumable-stream:rs:sentinel:chat-6:turn-1`)).toBe(`1`);
+  });
+
+  test(`should still take the deprecated ttlSeconds, in seconds`, async () => {
+    // Arrange
+    const { publisher, subscriber } = createClients();
+    const adapter = createRedisAdapter({ publisher, subscriber, ttlSeconds: 60 });
+    const context = createResumableStream({ adapter, codec, waitUntil });
+    let source!: ReadableStreamDefaultController<string>;
+    const { stream } = await context.startStream(
+      new ReadableStream<string>({
+        start(controller) {
+          source = controller;
+        },
+      }),
+      { streamId: `chat-10`, generationId: `turn-1` },
+    );
+    const drained = stream.pipeTo(new WritableStream());
+    onTestFinished(async () => {
+      source.close();
+      await drained;
+    });
+
+    // Act
+    const ttl = await publisher.ttl(`ai-resumable-stream:generation:chat-10`);
+
+    // Assert
+    expect(ttl).toBe(60);
   });
 });
 
@@ -332,3 +405,66 @@ describe.each([
     });
   },
 );
+
+describe(`redis adapter commandTimeoutMs`, () => {
+  /**
+   * A peer that is gone without closing the connection: the client writes the command and
+   * never gets an answer.
+   */
+  async function createHangingClients(dropOn: RegExp) {
+    const proxy = await createDroppingProxy({ dropOn, hang: true });
+    const publisher: DroppableClient = createClientV5({ url: proxy.url });
+    const subscriber: DroppableClient = createClientV5({ url: proxy.url });
+    for (const client of [publisher, subscriber]) client.on(`error`, () => {});
+    onTestFinished(async () => {
+      /** A quit would wait for an answer too */
+      publisher.destroy();
+      subscriber.destroy();
+      await proxy.close();
+    });
+    return { publisher, subscriber, proxy };
+  }
+
+  test(`should reject a start with a CommandTimeoutError when Redis stops answering`, async () => {
+    // Arrange
+    const { publisher, subscriber, proxy } = await createHangingClients(
+      /SET\r\n\$\d+\r\n[^\r]*:generation:chat-8\r\n/,
+    );
+    const adapter = createRedisAdapter({ publisher, subscriber, commandTimeoutMs: 100 });
+    const context = createResumableStream({ adapter, codec, waitUntil });
+
+    // Act
+    const result = context.startStream(
+      new ReadableStream<string>({
+        start(controller) {
+          controller.enqueue(`a`);
+          controller.close();
+        },
+      }),
+      {
+        streamId: `chat-8`,
+        generationId: `turn-1`,
+      },
+    );
+
+    // Assert
+    await expect(result).rejects.toBeInstanceOf(CommandTimeoutError);
+    await proxy.dropped;
+  });
+
+  test(`should reject a stop with a CommandTimeoutError when Redis stops answering`, async () => {
+    // Arrange
+    const { publisher, subscriber, proxy } = await createHangingClients(
+      /SET\r\n\$\d+\r\n[^\r]*:stop:chat-9:turn-1\r\n/,
+    );
+    const adapter = createRedisAdapter({ publisher, subscriber, commandTimeoutMs: 100 });
+    const context = createResumableStream({ adapter, codec, waitUntil });
+
+    // Act
+    const result = context.stopStream({ streamId: `chat-9`, generationId: `turn-1` });
+
+    // Assert
+    await expect(result).rejects.toBeInstanceOf(CommandTimeoutError);
+    await proxy.dropped;
+  });
+});

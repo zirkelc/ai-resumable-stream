@@ -47,7 +47,7 @@ export type Publisher = {
   set(
     key: string,
     value: string,
-    options?: { expiration?: { type: `EX`; value: number } },
+    options?: { expiration?: { type: `EX` | `PX`; value: number } },
   ): Promise<unknown>;
   get(key: string): Promise<string | null>;
 };
@@ -80,18 +80,26 @@ export type CreateRuntimeOptions = {
    */
   ackTimeoutMs?: number;
   /**
-   * How long the sentinel of a stream lives, in seconds. Must be longer than the longest
-   * stream, because a consumer finds no stream after its sentinel expired.
+   * How long the sentinel of a finished stream lives, in milliseconds. The sentinel of a
+   * running stream lives as long as the heartbeat renews it.
    *
    * Differs from upstream: upstream keeps the sentinel a fixed 24 hours
    * (https://github.com/vercel/resumable-stream/issues/46,
    * https://github.com/vercel/resumable-stream/pull/18).
    */
-  ttlSeconds: number;
+  expireAfterMs: number;
   /**
    * How often a consumer checks the sentinel, in case the DONE message is lost.
    */
   doneWatchdogIntervalMs?: number;
+  /**
+   * How often a producer renews the sentinel of its running stream. The sentinel expires
+   * after three intervals without a renewal, so the stream of a producer that died is gone
+   * soon, and not only after 24 hours.
+   *
+   * Differs from upstream: upstream sets the running sentinel once, for 24 hours.
+   */
+  heartbeatIntervalMs?: number;
 };
 
 export type Runtime = {
@@ -137,6 +145,18 @@ const DEFAULT_ACK_TIMEOUT_MS = 1_000;
 
 const DEFAULT_DONE_WATCHDOG_INTERVAL_MS = 10_000;
 
+/**
+ * Long enough to keep the commands few, one SET per running stream every 30 s, and short
+ * enough that the stream of a producer that died is gone in about 1.5 minutes.
+ */
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
+
+/**
+ * The running sentinel lives this many heartbeat intervals, so two renewals in a row can
+ * fail, for example during a reconnect, before it expires.
+ */
+const HEARTBEATS_PER_SENTINEL_TTL = 3;
+
 function noop() {}
 
 export function createRuntime(options: CreateRuntimeOptions): Runtime {
@@ -146,8 +166,9 @@ export function createRuntime(options: CreateRuntimeOptions): Runtime {
     subscriber: options.subscriber,
     waitUntil: options.waitUntil ?? noop,
     ackTimeoutMs: options.ackTimeoutMs ?? DEFAULT_ACK_TIMEOUT_MS,
-    ttlSeconds: options.ttlSeconds,
+    expireAfterMs: options.expireAfterMs,
     doneWatchdogIntervalMs: options.doneWatchdogIntervalMs ?? DEFAULT_DONE_WATCHDOG_INTERVAL_MS,
+    heartbeatIntervalMs: options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
   };
 
   return {
@@ -163,8 +184,9 @@ type Context = {
   subscriber: Subscriber;
   waitUntil: (promise: Promise<unknown>) => void;
   ackTimeoutMs: number;
-  ttlSeconds: number;
+  expireAfterMs: number;
   doneWatchdogIntervalMs: number;
+  heartbeatIntervalMs: number;
 };
 
 async function resumeExistingStream(
@@ -185,7 +207,13 @@ async function createNewResumableStream(
   const requestChannel = `${ctx.keyPrefix}:request:${streamId}`;
   const sentinelKey = `${ctx.keyPrefix}:sentinel:${streamId}`;
   const chunkChannel = (listenerId: string) => `${ctx.keyPrefix}:chunk:${listenerId}`;
-  const sentinelExpiration = { expiration: { type: `EX` as const, value: ctx.ttlSeconds } };
+  const runningExpiration = {
+    expiration: {
+      type: `PX` as const,
+      value: ctx.heartbeatIntervalMs * HEARTBEATS_PER_SENTINEL_TTL,
+    },
+  };
+  const doneExpiration = { expiration: { type: `PX` as const, value: ctx.expireAfterMs } };
 
   const chunks: Array<string> = [];
   const listenerIds: Array<string> = [];
@@ -255,7 +283,7 @@ async function createNewResumableStream(
   try {
     await ctx.subscriber.subscribe(requestChannel, onRequest);
     try {
-      await ctx.publisher.set(sentinelKey, `1`, sentinelExpiration);
+      await ctx.publisher.set(sentinelKey, `1`, runningExpiration);
     } catch (error) {
       await ctx.subscriber.unsubscribe(requestChannel, onRequest).catch(noop);
       throw error;
@@ -264,6 +292,24 @@ async function createNewResumableStream(
     resolveDone();
     throw error;
   }
+
+  /**
+   * Renews the running sentinel while the producer is alive. A producer that died stops
+   * the renewals, so its sentinel expires: a new resume then finds no stream at once, and
+   * the watchdog of an attached consumer closes its stream. A failed renewal is retried at
+   * the next interval. The renewal is a plain SET, so it also restores a sentinel that
+   * expired while Redis was unreachable. The teardown stops the renewals before it sends
+   * DONE, and one connection keeps the order of its commands, so a renewal never
+   * overwrites DONE.
+   *
+   * Differs from upstream: upstream sets the running sentinel once, for 24 hours, so a
+   * consumer waits for the ack timeout on every resume of a stream whose producer died.
+   */
+  const heartbeat = setInterval(() => {
+    void ctx.publisher.set(sentinelKey, `1`, runningExpiration).catch(noop);
+  }, ctx.heartbeatIntervalMs);
+  /** A long-lived process can still exit while a stream runs */
+  heartbeat.unref?.();
 
   /**
    * Marks the stream done, tells the consumers and stops to answer requests.
@@ -280,16 +326,18 @@ async function createNewResumableStream(
    * - Waits for the chunk publishes still in flight, so a runtime that freezes the process
    *   after `waitUntil` does not lose them.
    *
-   * If the DONE write fails, the sentinel stays "1" until it expires. A consumer then gets
+   * If the DONE write fails, the sentinel stays "1" until it expires, which is three
+   * heartbeat intervals after the teardown stopped the renewals. A consumer then gets
    * no answer and fails with the ack timeout.
    */
   let finishing: Promise<void> | undefined;
   const finish = () => {
     finishing ??= (async () => {
       isDone = true;
+      clearInterval(heartbeat);
       for (const listenerId of listenerIds) publish(chunkChannel(listenerId), DONE_MESSAGE);
       await Promise.allSettled([
-        ctx.publisher.set(sentinelKey, DONE_VALUE, sentinelExpiration),
+        ctx.publisher.set(sentinelKey, DONE_VALUE, doneExpiration),
         ctx.subscriber.unsubscribe(requestChannel, onRequest),
         ...inFlight,
       ]);
@@ -424,6 +472,7 @@ function resumeStream(ctx: Context, streamId: string): Promise<ReadableStream<st
             }
             doneObservations += 1;
             if (doneObservations < 2) return;
+            // TODO(#26): error the stream when the sentinel is gone, close it only on DONE
             closeStream();
             await cleanup();
           } catch {

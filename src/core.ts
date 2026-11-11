@@ -66,6 +66,14 @@ export type ResumeStreamOptions = {
    * The generation to resume. Defaults to the one the stream id currently points at.
    */
   generationId?: string;
+  /**
+   * Ends the resume when it aborts, at any time until the stream ends. Before
+   * `resumeStream` returns, the promise rejects with the reason of the signal. After that,
+   * the returned stream errors with it, and the adapter stream is cancelled. Pass the
+   * signal of the incoming request, so a client that goes away frees the resume at once,
+   * also while the resume still waits for the first chunk.
+   */
+  signal?: AbortSignal;
 };
 
 export type StopStreamOptions = {
@@ -100,7 +108,13 @@ export type CreateResumableStreamOptions<CHUNK> = {
   adapter: StreamAdapter;
   codec: StreamCodec<CHUNK>;
   /**
-   * Keeps the host process alive until persistence finishes. Omit on long-lived servers.
+   * Receives each promise of the work that runs after the stream is returned: reading the
+   * source, the teardown of the adapter, and the stop listener. All of them have settled
+   * when that work is done, and none of them rejects.
+   *
+   * On a serverless runtime, pass the `waitUntil` of the platform, so the work is not
+   * suspended. To close the store clients safely, collect the promises and wait for them
+   * before you close the clients.
    */
   waitUntil?: (promise: Promise<unknown>) => void;
   /**
@@ -134,6 +148,38 @@ async function ignoreErrors(fn: () => unknown): Promise<void> {
   } catch {
     /** Nothing to do */
   }
+}
+
+/**
+ * Settles with the resume of the adapter, or rejects with the reason of the signal if it
+ * aborts first. A stream that the adapter returns after the abort is cancelled, so its
+ * subscription or its polling does not outlive the resume.
+ */
+function abortable(
+  pending: Promise<ReadableStream<string> | null>,
+  signal: AbortSignal,
+): Promise<ReadableStream<string> | null> {
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      reject(signal.reason);
+      pending
+        .then((stream) => stream?.cancel(signal.reason))
+        .catch(() => {
+          /** The resume failed on its own, so there is nothing to cancel */
+        });
+    };
+    signal.addEventListener(`abort`, onAbort, { once: true });
+    pending.then(
+      (stream) => {
+        signal.removeEventListener(`abort`, onAbort);
+        resolve(stream);
+      },
+      (error: unknown) => {
+        signal.removeEventListener(`abort`, onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 /**
@@ -264,9 +310,11 @@ export function createResumableStream<CHUNK>(options: CreateResumableStreamOptio
      * neither delays the client nor fails the stream. A stop requested in the meantime is
      * not lost where the adapter keeps it until the listener asks. Started only once the
      * generation is registered, so a start that is refused never touches the stop listeners
-     * of the generation it collided with.
+     * of the generation it collided with. Given to `waitUntil`, because a listener that
+     * registers after the source ended is removed here, and the clients must stay open
+     * until that is done.
      */
-    void (async () => {
+    const listening = (async () => {
       try {
         const remove = await adapter.onStopRequested({
           streamId,
@@ -283,6 +331,7 @@ export function createResumableStream<CHUNK>(options: CreateResumableStreamOptio
         await ignoreErrors(() => onStopSubscriptionError?.(error));
       }
     })();
+    waitUntil?.(listening);
 
     const drained = (async () => {
       try {
@@ -335,12 +384,21 @@ export function createResumableStream<CHUNK>(options: CreateResumableStreamOptio
   async function resumeStream(
     options: ResumeStreamOptions,
   ): Promise<AsyncIterableStream<CHUNK> | null> {
-    const { streamId, generationId } = options;
-    const encoded = await adapter.resumeStream(
-      generationId === undefined ? { streamId } : { streamId, generationId },
-    );
+    const { streamId, generationId, signal } = options;
+    signal?.throwIfAborted();
+
+    const pending = adapter.resumeStream({
+      streamId,
+      ...(generationId === undefined ? {} : { generationId }),
+      ...(signal === undefined ? {} : { signal }),
+    });
+    const encoded = signal ? await abortable(pending, signal) : await pending;
     if (!encoded) return null;
 
+    /**
+     * The pipe cancels the stream of the adapter and errors the stream of the caller when
+     * the signal aborts.
+     */
     const chunks = encoded.pipeThrough(
       new TransformStream<string, CHUNK>({
         async transform(data, controller) {
@@ -348,6 +406,7 @@ export function createResumableStream<CHUNK>(options: CreateResumableStreamOptio
           if (chunk !== undefined) controller.enqueue(chunk);
         },
       }),
+      signal === undefined ? {} : { signal },
     );
 
     return createAsyncIterableStream(chunks);
