@@ -6,6 +6,7 @@ import { createClient as createClientV6 } from "redis-v6";
 import { afterAll, afterEach, beforeAll, describe, expect, onTestFinished, test, vi } from "vitest";
 import type { StreamCodec } from "../../adapter.js";
 import { createResumableStream } from "../../core.js";
+import type { NodeRedis } from "./client.js";
 import { CommandTimeoutError, createRedisAdapter } from "./index.js";
 
 /**
@@ -68,7 +69,7 @@ function createFailingSource(value: string, error: Error) {
 /**
  * A client of either redis version, with what a test needs to wait for its reconnect.
  */
-type DroppableClient = Parameters<typeof createRedisAdapter>[0][`publisher`] & {
+type DroppableClient = NodeRedis & {
   isReady: boolean;
   on(event: `error`, listener: (error: Error) => void): unknown;
   quit(): Promise<unknown>;

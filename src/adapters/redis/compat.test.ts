@@ -7,6 +7,7 @@ import { createClient as createClientV5 } from "redis-v5";
 import { createClient as createClientV6 } from "redis-v6";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { createResumableUIMessageStream } from "../../ai-sdk/index.js";
+import type { NodeRedis } from "./client.js";
 import { createRedisAdapter } from "./index.js";
 
 /**
@@ -16,10 +17,10 @@ import { createRedisAdapter } from "./index.js";
  * conformance checks below, and at runtime by driving every Redis command the adapter
  * relies on (`isOpen`, `connect`, `get`/`set`/`del`/`eval` for the generation pointer and its
  * stop key, `get`/`set` for the sentinel of the runtime, `subscribe`, `unsubscribe`, and
- * `publish`).
+ * `publish`). The option also takes a Bun client, so the check is against the `redis` client
+ * shape alone.
  */
-type Options = Parameters<typeof createRedisAdapter>[0];
-type RedisClient = Options[`publisher`] & Options[`subscriber`];
+type RedisClient = NodeRedis;
 
 /**
  * Fails to compile if the client is missing any command or property the library needs.

@@ -1,0 +1,9 @@
+{
+  // Checks the tests that run with `bun test`, with the Bun types
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node", "bun"]
+  },
+  "include": ["src/**/*.bun.test.ts"],
+  "exclude": []
+}
