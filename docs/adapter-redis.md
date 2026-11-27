@@ -2,15 +2,27 @@
 
 The Redis adapter keeps the chunks in the memory of the producing process. Redis only transports messages and stores a few small keys per stream. Redis never stores the chunks.
 
-```sh
-npm install ai-resumable-stream redis
-```
+## Installation
 
-Both `redis` v5 and v6 are supported.
+The adapter needs a Redis client. It supports two clients:
+
+- **`redis` (node-redis):** the `redis` package, v5 or v6. It works on Node and on Bun.
+
+  ```sh
+  npm install ai-resumable-stream redis
+  ```
+
+- **Bun Redis:** the client built into Bun (`Bun.RedisClient`). You do not need to install another package.
+
+  ```sh
+  bun add ai-resumable-stream
+  ```
+
+See [Clients](#clients) for how to create each client.
 
 ## Example
 
-The adapter requires two Redis clients, because a subscribed connection cannot send commands. The library connects the clients if they are not connected yet, but it never disconnects them. You manage the connection lifecycle in your application and can reuse the clients for all streams.
+The example uses clients from the `redis` package. See [Clients](#clients) for the rules that apply to both clients and for the Bun client.
 
 ```ts
 import { createUIMessageStreamResponse, streamText, toUIMessageStream, type UIMessage } from "ai";
@@ -63,6 +75,42 @@ export async function stop(chatId: string) {
 ```sh
 pnpm example:redis
 ```
+
+## Clients
+
+The adapter requires two clients, because a subscribed connection cannot send commands. The library connects the clients if they are not connected yet, but it never disconnects them. You manage the connection lifecycle in your application and can reuse the clients for all streams.
+
+### Redis
+
+Give the adapter two clients from the `redis` package, v5 or v6. They work on Node and on Bun.
+
+```ts
+import { createClient } from "redis";
+import { createRedisAdapter } from "ai-resumable-stream/adapters/redis";
+
+// Important: publisher and subscriber must be separate clients
+const publisher = createClient({ url: process.env.REDIS_URL });
+const subscriber = createClient({ url: process.env.REDIS_URL });
+
+const adapter = createRedisAdapter({ publisher, subscriber });
+```
+
+### Bun
+
+On Bun, you can give the adapter two clients built into Bun (`Bun.RedisClient`) in place of `redis` clients. Then you do not need to install `redis`.
+
+```ts
+import { RedisClient } from "bun";
+import { createRedisAdapter } from "ai-resumable-stream/adapters/redis";
+
+// Important: publisher and subscriber must be separate clients
+const publisher = new RedisClient(process.env.REDIS_URL);
+const subscriber = new RedisClient(process.env.REDIS_URL);
+
+const adapter = createRedisAdapter({ publisher, subscriber });
+```
+
+After a reconnect, the Bun client does not subscribe again on the server. The adapter does this for it: it sets the `onconnect` handler of each Bun client and calls the handler that was there before. If you set your own `onconnect`, set it before you create the adapter. A handler that you set later replaces the handler of the adapter, and then a stream cannot be resumed or stopped after a reconnect.
 
 ## Options
 

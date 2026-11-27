@@ -1,4 +1,4 @@
-import { coverageConfigDefaults, defineConfig } from "vitest/config";
+import { configDefaults, coverageConfigDefaults, defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
@@ -8,10 +8,12 @@ export default defineConfig({
      * racing for the same port and keeps one file's flush out of another's stream.
      */
     fileParallelism: false,
+    // These tests need the Bun runtime and run with `bun test`
+    exclude: [...configDefaults.exclude, "**/*.bun.test.ts"],
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts"],
-      exclude: [...coverageConfigDefaults.exclude],
+      exclude: [...coverageConfigDefaults.exclude, "**/*.bun.test.ts"],
     },
   },
 });

@@ -1,45 +1,19 @@
 import { AckTimeoutError, createRuntime } from "./runtime/runtime.js";
 import type { StreamAdapter } from "../../adapter.js";
+import { type RedisClient, toNodeRedis } from "./client.js";
 import { chunksToSSE, sseToChunks } from "./sse.js";
-
-/**
- * A Redis client, described by the commands this adapter actually calls rather than by
- * the client type of a specific `redis` release. The generic parameters of
- * `RedisClientType` are not mutually assignable across redis v5 and v6, so a nominal
- * type would pin consumers to one of them.
- *
- * `unsubscribe` takes the listener because a listener removes itself alone, never every
- * listener of its channel.
- */
-type Redis = {
-  isOpen: boolean;
-  connect(): Promise<unknown>;
-  publish(channel: string, message: string): Promise<unknown>;
-  subscribe(channel: string, listener: (message: string) => void): Promise<unknown>;
-  unsubscribe(channel: string, listener?: (message: string) => void): Promise<unknown>;
-  get(key: string): Promise<string | null>;
-  set(
-    key: string,
-    value: string,
-    options?: { expiration?: { type: `EX` | `PX`; value: number } },
-  ): Promise<unknown>;
-  del(key: string): Promise<unknown>;
-  eval(
-    script: string,
-    options?: { keys?: Array<string>; arguments?: Array<string> },
-  ): Promise<unknown>;
-};
 
 export type CreateRedisAdapterOptions = {
   /**
-   * A client from the `redis` package, used to publish chunks and stop requests.
+   * A client from the `redis` package or the client built into Bun (`Bun.RedisClient`),
+   * used to publish chunks and stop requests.
    * Connected on first use and never disconnected, so it stays reusable across streams.
    */
-  publisher: Redis;
+  publisher: RedisClient;
   /**
    * A second client, required because a subscribed connection cannot issue commands.
    */
-  subscriber: Redis;
+  subscriber: RedisClient;
   /**
    * Namespace for every key and channel this adapter touches.
    */
@@ -127,8 +101,6 @@ const STOP_TTL_SECONDS = 60 * 60;
  */
 export function createRedisAdapter(options: CreateRedisAdapterOptions): StreamAdapter {
   const {
-    publisher,
-    subscriber,
     keyPrefix = DEFAULT_KEY_PREFIX,
     ackTimeoutMs,
     ttlSeconds,
@@ -141,6 +113,10 @@ export function createRedisAdapter(options: CreateRedisAdapterOptions): StreamAd
   const expireAfterMs =
     options.expireAfterMs ??
     (ttlSeconds === undefined ? DEFAULT_EXPIRE_AFTER_MS : ttlSeconds * 1_000);
+
+  // After the checks of the options, so a call that throws leaves the clients unchanged
+  const publisher = toNodeRedis(options.publisher);
+  const subscriber = toNodeRedis(options.subscriber);
 
   /**
    * Rejects with a `CommandTimeoutError` when the call takes longer than

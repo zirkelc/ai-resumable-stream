@@ -293,7 +293,7 @@ Use an id that the client already knows, for example the id of the user message 
 This adapter requires two Redis clients, because pub/sub needs a separate connection. The library connects the clients if they are not connected yet, but it never disconnects them. You manage the connection lifecycle in your application and can reuse the clients for all streams.
 
 > [!NOTE]
-> You need to install `redis` to use this adapter. Both v5 and v6 are supported.
+> This adapter needs a Redis client. Supported clients are `redis` v5 and v6 and the client built into Bun. See [Installation](https://github.com/zirkelc/ai-resumable-stream/blob/main/docs/adapter-redis.md#installation).
 
 ```ts
 import { createClient } from "redis";

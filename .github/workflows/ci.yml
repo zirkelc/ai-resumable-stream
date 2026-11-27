@@ -64,6 +64,12 @@ jobs:
         run: pnpm build
       - name: Test
         run: pnpm test
+      # The latest Bun, so that a change to its built-in Redis client fails here first.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Test on Bun
+        run: pnpm test:bun
 
   preview:
     name: Preview

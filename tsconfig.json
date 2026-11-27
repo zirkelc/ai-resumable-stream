@@ -2,7 +2,10 @@
   // https://github.com/total-typescript/tsconfig
   "extends": "@total-typescript/tsconfig/tsc/no-dom/library",
   "compilerOptions": {
-    "lib": ["es2024"]
+    "lib": ["es2024"],
+    // Without the Bun types, so library code cannot use Bun globals. tsconfig.bun.json checks the Bun tests.
+    "types": ["node"]
   },
-  "include": ["src", "examples"]
+  "include": ["src", "examples"],
+  "exclude": ["src/**/*.bun.test.ts"]
 }
